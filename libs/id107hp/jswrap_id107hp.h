@@ -13,3 +13,7 @@ void jswrap_id107hp_init();
 void jswrap_id107hp_kill();
 bool jswrap_id107hp_idle();
 void jswrap_id107hp_world();
+void jswrap_id107hp_touch_init();
+void jswrap_id107hp_batPinIRQStart();
+void jswrap_id107hp_batPinIRQStop();
+void jswrap_id107hp_rdyPinIRQStop();
