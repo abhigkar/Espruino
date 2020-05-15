@@ -36,16 +36,13 @@ info = {
    'makefile' : [
      #'DEFINES+=-DCONFIG_GPIO_AS_PINRESET', # Allow the reset pin to work
      'DEFINES+=-DBLUETOOTH_NAME_PREFIX=\'"Espruino-107"\'',
-     'JSMODULESOURCES+=libs/js/Font4x4.min.js',
-     'JSMODULESOURCES+=libs/js/Font4x8Numeric.min.js',
-     'JSMODULESOURCES+=libs/js/Font4x4Numeric.min.js',
+     'JSMODULESOURCES+=libs/js/Copasetic40x58.min.js',
      'JSMODULESOURCES+=libs/js/Font6x8.min.js',
-     'JSMODULESOURCES+=libs/js/Font6x12.min.js',
      'JSMODULESOURCES+=libs/js/Font8x12.min.js',
      'JSMODULESOURCES+=libs/js/Font8x16.min.js',
      'JSMODULESOURCES+=libs/js/FontDennis8.min.js',
-     'INCLUDE += -I$(ROOT)/libs/id107hp',
-     'WRAPPERSOURCES += libs/id107hp/jswrap_id107hp.c',
+     #'INCLUDE += -I$(ROOT)/libs/id107hp',
+     #'WRAPPERSOURCES += libs/id107hp/jswrap_id107hp.c',
      'DFU_SETTINGS=--sd-req 129,136 --dev-type 572 --dev-revision 0x64' ## TODO change for ID107 HR plus
    ]
  }
@@ -73,28 +70,35 @@ chip = {
 };
 
 devices = {
-	'ACCEL' : {
-            'device' : 'KX022', 
-            'addr' : 0x1e,
-            'pin_sda' : 'D3',
-            'pin_scl' : 'D5',
+#	'ACCEL' : {
+#            'device' : 'KX022', 
+#            'addr' : 0x1e,
+#            'pin_sda' : 'D3',
+#            'pin_scl' : 'D5',
 #            'pin_int' : 'D6'
-          },
-  'TOUCH' : { 
-            'device' : 'IQS263', 
-            'addr' : 0x44,
-            'pin_sda' : 'D16',
-            'pin_scl' : 'D15',
-            'pin_rdy' : 'D17'
-          },
-  'HEARTRATE' : { 
-            'device' : 'SI114X', 
-            'addr' : 0x5a,
-            'pin_sda' : 'D10',
-            'pin_scl' : 'D9',
-            'pin_led' : 'D18'
+#          },
+#  'TOUCH' : { 
+#            'device' : 'IQS263', 
+#            'addr' : 0x44,
+#            'pin_sda' : 'D16',
+#            'pin_scl' : 'D15',
+#            'pin_rdy' : 'D17'
+#          },
+#  'HEARTRATE' : { 
+#            'device' : 'SI114X', 
+#            'addr' : 0x5a,
+#            'pin_sda' : 'D10',
+#            'pin_scl' : 'D9',
+#            'pin_led' : 'D18'
 #            'pin_int' : 'D8'
-          }
+#          },
+#  'SPIFLASH' : {
+#            'pin_cs' : 'D28',
+#            'pin_sck' : 'D30',
+#            'pin_mosi' : 'D31', # D0
+#            'pin_miso' : 'D27', # D1
+#            'size' : 1024*1024 # 1MB
+#          }
 };
 
 # left-right, or top-bottom order
