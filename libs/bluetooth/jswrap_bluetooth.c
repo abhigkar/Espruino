@@ -2799,6 +2799,9 @@ NRF.setServices({
   }
 });
 ```
+
+**Note:** If `passkey` or `oob` is specified, the Nordic UART service (if enabled)
+will automatically be set to require encryption, but otherwise it is open.
 */
 void jswrap_ble_setSecurity(JsVar *options) {
   if (!jsvIsObject(options) && !jsvIsUndefined(options))
@@ -2806,6 +2809,9 @@ void jswrap_ble_setSecurity(JsVar *options) {
   else {
     jsvObjectSetOrRemoveChild(execInfo.hiddenRoot, BLE_NAME_SECURITY, options);
     jsble_update_security();
+    // If we need UART to be encrypted, we need to trigger a restart
+    if (bleStatus & BLE_NEEDS_SOFTDEVICE_RESTART)
+      jswrap_ble_restart();
   }
 }
 
@@ -2946,7 +2952,7 @@ specifically for Espruino.
 void jswrap_ble_BluetoothDevice_sendPasskey(JsVar *parent, JsVar *passkeyVar) {
   char passkey[BLE_GAP_PASSKEY_LEN+1];
   memset(passkey, 0, sizeof(passkey));
-  jsvGetString(passkeyVar, passkey, sizeof(passkey));
+  jsvGetStringChars(passkeyVar,0,passkey, sizeof(passkey));
   uint32_t err_code = jsble_central_send_passkey(passkey);
   jsble_check_error(err_code);
 }

@@ -49,6 +49,9 @@ typedef enum {
   JSGRAPHICSFLAGS_COLOR_GRB = JSGRAPHICSFLAGS_COLOR_BASE*4, //< All devices: color order is GRB
   JSGRAPHICSFLAGS_COLOR_RBG = JSGRAPHICSFLAGS_COLOR_BASE*5, //< All devices: color order is RBG
   JSGRAPHICSFLAGS_COLOR_MASK = JSGRAPHICSFLAGS_COLOR_BASE*7, //< All devices: color order is BRG
+
+  /// If any bits in this mark are set, pixel data is not laid out linearly
+  JSGRAPHICSFLAGS_NONLINEAR = JSGRAPHICSFLAGS_ARRAYBUFFER_ZIGZAG|JSGRAPHICSFLAGS_ARRAYBUFFER_VERTICAL_BYTE|JSGRAPHICSFLAGS_ARRAYBUFFER_INTERLEAVEX
 } JsGraphicsFlags;
 
 typedef enum {
@@ -95,7 +98,6 @@ typedef struct {
 typedef struct JsGraphics {
   JsVar *graphicsVar; // this won't be locked again - we just know that it is already locked by something else
   JsGraphicsData data;
-  unsigned char _blank; ///< this is needed as jsvGetString for 'data' wants to add a trailing zero
   void *backendData; ///< Data used by the graphics backend
 
   void (*setPixel)(struct JsGraphics *gfx, int x, int y, unsigned int col);
@@ -118,6 +120,8 @@ void graphicsSetVar(JsGraphics *gfx);
 size_t graphicsGetMemoryRequired(const JsGraphics *gfx);
 // If graphics is flipped or rotated then the coordinates need modifying
 void graphicsToDeviceCoordinates(const JsGraphics *gfx, int *x, int *y);
+unsigned short graphicsGetWidth(const JsGraphics *gfx);
+unsigned short graphicsGetHeight(const JsGraphics *gfx);
 // drawing functions - all coordinates are in USER coordinates, not DEVICE coordinates
 void         graphicsSetPixel(JsGraphics *gfx, int x, int y, unsigned int col);
 unsigned int graphicsGetPixel(JsGraphics *gfx, int x, int y);
@@ -128,7 +132,7 @@ void graphicsDrawRect(JsGraphics *gfx, int x1, int y1, int x2, int y2);
 void graphicsDrawEllipse(JsGraphics *gfx, int x, int y, int x2, int y2);
 void graphicsFillEllipse(JsGraphics *gfx, int x, int y, int x2, int y2);
 void graphicsDrawLine(JsGraphics *gfx, int x1, int y1, int x2, int y2);
-void graphicsFillPoly(JsGraphics *gfx, int points, short *vertices); // may overwrite vertices...
+void graphicsFillPoly(JsGraphics *gfx, int points, short *vertices); // each pixel is 1/16th a pixel may overwrite vertices...
 #ifndef NO_VECTOR_FONT
 unsigned int graphicsFillVectorChar(JsGraphics *gfx, int x1, int y1, int size, char ch); ///< prints character, returns width
 unsigned int graphicsVectorCharWidth(JsGraphics *gfx, unsigned int size, char ch); ///< returns the width of a character

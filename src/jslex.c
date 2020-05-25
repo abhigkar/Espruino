@@ -744,6 +744,7 @@ void jslTokenAsString(int token, char *str, size_t len) {
   case LEX_REGEX : strcpy(str, "REGEX"); return;
   case LEX_UNFINISHED_REGEX : strcpy(str, "UNFINISHED REGEX"); return;
   case LEX_UNFINISHED_COMMENT : strcpy(str, "UNFINISHED COMMENT"); return;
+  case 255 : strcpy(str, "[ERASED]"); return;
   }
   if (token>=_LEX_OPERATOR_START && token<_LEX_R_LIST_END) {
     const char tokenNames[] =
@@ -939,8 +940,7 @@ JsVar *jslNewTokenisedStringFromLexer(JslCharPos *charFrom, size_t charTo) {
         JsvStringIterator it;
         jsvStringIteratorClone(&it, &lex->tokenStart.it);
         while (jsvStringIteratorGetIndex(&it)+1 < jsvStringIteratorGetIndex(&lex->it)) {
-          jsvStringIteratorSetCharAndNext(&dstit, jsvStringIteratorGetChar(&it));
-          jsvStringIteratorNext(&it);
+          jsvStringIteratorSetCharAndNext(&dstit, jsvStringIteratorGetCharAndNext(&it));
         }
         jsvStringIteratorFree(&it);
       } else { // single char for the token
@@ -973,8 +973,7 @@ JsVar *jslNewStringFromLexer(JslCharPos *charFrom, size_t charTo) {
       JsvStringIterator it;
       jsvStringIteratorClone(&it, &charFrom->it);
       while (jsvStringIteratorHasChar(&it) && (--maxLength>0)) {
-        *(flatPtr++) = jsvStringIteratorGetChar(&it);
-        jsvStringIteratorNext(&it);
+        *(flatPtr++) = jsvStringIteratorGetCharAndNext(&it);
       }
       jsvStringIteratorFree(&it);
       return var;
@@ -996,7 +995,7 @@ JsVar *jslNewStringFromLexer(JslCharPos *charFrom, size_t charTo) {
   JsvStringIterator it;
   jsvStringIteratorClone(&it, &charFrom->it);
   while (jsvStringIteratorHasChar(&it) && (--maxLength>0)) {
-    char ch = jsvStringIteratorGetChar(&it);
+    char ch = jsvStringIteratorGetCharAndNext(&it);
     if (blockChars >= jsvGetMaxCharactersInVar(block)) {
       jsvSetCharactersInVar(block, blockChars);
       JsVar *next = jsvNewWithFlags(JSV_STRING_EXT_0);
@@ -1008,7 +1007,6 @@ JsVar *jslNewStringFromLexer(JslCharPos *charFrom, size_t charTo) {
       blockChars=0; // it's new, so empty
     }
     block->varData.str[blockChars++] = ch;
-    jsvStringIteratorNext(&it);
   }
   jsvSetCharactersInVar(block, blockChars);
   jsvUnLock(block);
@@ -1033,6 +1031,24 @@ bool jslNeedSpaceBetween(unsigned char lastch, unsigned char ch) {
   return (lastch>=_LEX_R_LIST_START || ch>=_LEX_R_LIST_START) &&
          (lastch>=_LEX_R_LIST_START || isAlpha((char)lastch) || isNumeric((char)lastch)) &&
          (ch>=_LEX_R_LIST_START || isAlpha((char)ch) || isNumeric((char)ch));
+}
+
+/// Output a tokenised string, replacing tokens with their text equivalents
+void jslPrintTokenisedString(JsVar *code, vcbprintf_callback user_callback, void *user_data) {
+  // reconstruct the tokenised output into something more readable
+  char buf[32];
+  unsigned char lastch = 0;
+  JsvStringIterator it;
+  jsvStringIteratorNew(&it, code, 0);
+  while (jsvStringIteratorHasChar(&it)) {
+    unsigned char ch = (unsigned char)jsvStringIteratorGetCharAndNext(&it);
+    if (jslNeedSpaceBetween(lastch, ch))
+      user_callback(" ", user_data);
+    jslFunctionCharAsString(ch, buf, sizeof(buf));
+    user_callback(buf, user_data);
+    lastch = ch;
+  }
+  jsvStringIteratorFree(&it);
 }
 
 void jslPrintPosition(vcbprintf_callback user_callback, void *user_data, size_t tokenPos) {
@@ -1071,8 +1087,8 @@ void jslPrintTokenLineMarker(vcbprintf_callback user_callback, void *user_data, 
   JsvStringIterator it;
   jsvStringIteratorNew(&it, lex->sourceVar, startOfLine);
   unsigned char lastch = 0;
-  while (jsvStringIteratorHasChar(&it) && chars<60) {
-    unsigned char ch = (unsigned char)jsvStringIteratorGetChar(&it);
+  while (jsvStringIteratorHasChar(&it) && chars<60 && lastch!=255) {
+    unsigned char ch = (unsigned char)jsvStringIteratorGetCharAndNext(&it);
     if (ch == '\n') break;
     if (jslNeedSpaceBetween(lastch, ch)) {
       col++;
@@ -1085,7 +1101,6 @@ void jslPrintTokenLineMarker(vcbprintf_callback user_callback, void *user_data, 
     user_callback(buf, user_data);
     chars++;
     lastch = ch;
-    jsvStringIteratorNext(&it);
   }
   jsvStringIteratorFree(&it);
 

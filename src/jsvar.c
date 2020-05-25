@@ -1097,8 +1097,7 @@ JsVar *jsvMakeIntoVariableName(JsVar *var, JsVar *valueOrZero) {
           ext = ext2;
           nChars = 0;
         }
-        ext->varData.str[nChars++] = jsvStringIteratorGetChar(&it);
-        jsvStringIteratorNext(&it);
+        ext->varData.str[nChars++] = jsvStringIteratorGetCharAndNext(&it);
       }
       jsvStringIteratorFree(&it);
       if (ext) {
@@ -1200,8 +1199,8 @@ bool jsvIsBasicVarEqual(JsVar *a, JsVar *b) {
     jsvStringIteratorNew(&ita, a, 0);
     jsvStringIteratorNew(&itb, b, 0);
     while (true) {
-      char a = jsvStringIteratorGetChar(&ita);
-      char b = jsvStringIteratorGetChar(&itb);
+      char a = jsvStringIteratorGetCharAndNext(&ita);
+      char b = jsvStringIteratorGetCharAndNext(&itb);
       if (a != b) {
         jsvStringIteratorFree(&ita);
         jsvStringIteratorFree(&itb);
@@ -1212,8 +1211,6 @@ bool jsvIsBasicVarEqual(JsVar *a, JsVar *b) {
         jsvStringIteratorFree(&itb);
         return true;
       }
-      jsvStringIteratorNext(&ita);
-      jsvStringIteratorNext(&itb);
     }
     // we never get here
     return false; // make compiler happy
@@ -1309,7 +1306,7 @@ size_t jsvGetString(const JsVar *v, char *str, size_t len) {
     // Try and get as a JsVar string, and try again
     JsVar *stringVar = jsvAsString((JsVar*)v); // we know we're casting to non-const here
     if (stringVar) {
-      size_t l = jsvGetString(stringVar, str, len); // call again - but this time with converted var
+      size_t l = jsvGetStringChars(stringVar, 0, str, len); // call again - but this time with converted var
       jsvUnLock(stringVar);
       return l;
     } else {
@@ -1320,7 +1317,7 @@ size_t jsvGetString(const JsVar *v, char *str, size_t len) {
   }
 }
 
-/// Get len bytes of string data from this string. Does not error if string len is not equal to len
+/// Get len bytes of string data from this string. Does not error if string len is not equal to len, no terminating 0
 size_t jsvGetStringChars(const JsVar *v, size_t startChar, char *str, size_t len) {
   assert(jsvHasCharacterData(v));
   size_t l = len;
@@ -1331,11 +1328,9 @@ size_t jsvGetStringChars(const JsVar *v, size_t startChar, char *str, size_t len
       jsvStringIteratorFree(&it);
       return len;
     }
-    *(str++) = jsvStringIteratorGetChar(&it);
-    jsvStringIteratorNext(&it);
+    *(str++) = jsvStringIteratorGetCharAndNext(&it);
   }
   jsvStringIteratorFree(&it);
-  *str = 0;
   return len-l;
 }
 
@@ -1350,8 +1345,7 @@ void jsvSetString(JsVar *v, const char *str, size_t len) {
   jsvStringIteratorNew(&it, v, 0);
   size_t i;
   for (i=0;i<len;i++) {
-    jsvStringIteratorSetChar(&it, str[i]);
-    jsvStringIteratorNext(&it);
+    jsvStringIteratorSetCharAndNext(&it, str[i]);
   }
   jsvStringIteratorFree(&it);
 }
@@ -1423,11 +1417,7 @@ JsVar *jsvAsFlatString(JsVar *var) {
     jsvStringIteratorNew(&src, str, 0);
     jsvStringIteratorNew(&dst, flat, 0);
     while (len--) {
-      jsvStringIteratorSetChar(&dst, jsvStringIteratorGetChar(&src));
-      if (len>0) {
-        jsvStringIteratorNext(&src);
-        jsvStringIteratorNext(&dst);
-      }
+      jsvStringIteratorSetCharAndNext(&dst, jsvStringIteratorGetCharAndNext(&src));
     }
     jsvStringIteratorFree(&src);
     jsvStringIteratorFree(&dst);
@@ -1441,7 +1431,7 @@ JsVar *jsvAsFlatString(JsVar *var) {
  * a["0"] is actually translated to a[0]
  */
 JsVar *jsvAsArrayIndex(JsVar *index) {
-  if (jsvIsSimpleInt(index)) {
+  if (jsvIsSimpleInt(index) && jsvGetInteger(index)>=0) {
     return jsvLockAgain(index); // we're ok!
   } else if (jsvIsString(index)) {
     /* Index filtering (bug #19) - if we have an array index A that is:
@@ -1544,7 +1534,7 @@ char *jsvGetDataPointer(JsVar *v, size_t *len) {
     *len = jsvGetStringLength(v);
     return jsvGetFlatStringPointer(v);
   }
-  if (jsvIsString(v) && !jsvGetLastChild(v)) {
+  if (jsvIsBasicString(v) && !jsvGetLastChild(v)) {
     // It's a normal string but is small enough to have all the data in
     *len = jsvGetCharactersInVar(v);
     return (char*)v->varData.str;
@@ -1558,8 +1548,7 @@ size_t jsvGetLinesInString(JsVar *v) {
   JsvStringIterator it;
   jsvStringIteratorNew(&it, v, 0);
   while (jsvStringIteratorHasChar(&it)) {
-    if (jsvStringIteratorGetChar(&it)=='\n') lines++;
-    jsvStringIteratorNext(&it);
+    if (jsvStringIteratorGetCharAndNext(&it)=='\n') lines++;
   }
   jsvStringIteratorFree(&it);
   return lines;
@@ -1572,11 +1561,10 @@ size_t jsvGetCharsOnLine(JsVar *v, size_t line) {
   JsvStringIterator it;
   jsvStringIteratorNew(&it, v, 0);
   while (jsvStringIteratorHasChar(&it)) {
-    if (jsvStringIteratorGetChar(&it)=='\n') {
+    if (jsvStringIteratorGetCharAndNext(&it)=='\n') {
       currentLine++;
       if (currentLine > line) break;
     } else if (currentLine==line) chars++;
-    jsvStringIteratorNext(&it);
   }
   jsvStringIteratorFree(&it);
   return chars;
@@ -1592,7 +1580,7 @@ void jsvGetLineAndCol(JsVar *v, size_t charIdx, size_t *line, size_t *col) {
   JsvStringIterator it;
   jsvStringIteratorNew(&it, v, 0);
   while (jsvStringIteratorHasChar(&it)) {
-    char ch = jsvStringIteratorGetChar(&it);
+    char ch = jsvStringIteratorGetCharAndNext(&it);
     if (n==charIdx) {
       jsvStringIteratorFree(&it);
       *line = y;
@@ -1604,7 +1592,6 @@ void jsvGetLineAndCol(JsVar *v, size_t charIdx, size_t *line, size_t *col) {
       x=1; y++;
     }
     n++;
-    jsvStringIteratorNext(&it);
   }
   jsvStringIteratorFree(&it);
   // uh-oh - not found
@@ -1620,7 +1607,7 @@ size_t jsvGetIndexFromLineAndCol(JsVar *v, size_t line, size_t col) {
   JsvStringIterator it;
   jsvStringIteratorNew(&it, v, 0);
   while (jsvStringIteratorHasChar(&it)) {
-    char ch = jsvStringIteratorGetChar(&it);
+    char ch = jsvStringIteratorGetCharAndNext(&it);
     if ((y==line && x>=col) || y>line) {
       jsvStringIteratorFree(&it);
       return (y>line) ? (n-1) : n;
@@ -1630,7 +1617,6 @@ size_t jsvGetIndexFromLineAndCol(JsVar *v, size_t line, size_t col) {
       x=1; y++;
     }
     n++;
-    jsvStringIteratorNext(&it);
   }
   jsvStringIteratorFree(&it);
   return n;
@@ -1713,9 +1699,8 @@ void jsvAppendStringVar(JsVar *var, const JsVar *str, size_t stridx, size_t maxL
   JsvStringIterator it;
   jsvStringIteratorNewConst(&it, str, stridx);
   while (jsvStringIteratorHasChar(&it) && (maxLength-->0)) {
-    char ch = jsvStringIteratorGetChar(&it);
+    char ch = jsvStringIteratorGetCharAndNext(&it);
     jsvStringIteratorAppend(&dst, ch);
-    jsvStringIteratorNext(&it);
   }
   jsvStringIteratorFree(&it);
   jsvStringIteratorFree(&dst);
@@ -1799,7 +1784,7 @@ bool jsvIsStringNumericInt(const JsVar *var, bool allowDecimalPoint) {
   int chars=0;
   while (jsvStringIteratorHasChar(&it)) {
     chars++;
-    char ch = jsvStringIteratorGetChar(&it);
+    char ch = jsvStringIteratorGetCharAndNext(&it);
     if (ch=='.' && allowDecimalPoint) {
       allowDecimalPoint = false; // there can be only one
     } else {
@@ -1809,7 +1794,6 @@ bool jsvIsStringNumericInt(const JsVar *var, bool allowDecimalPoint) {
         return false;
       }
     }
-    jsvStringIteratorNext(&it);
   }
   jsvStringIteratorFree(&it);
   return chars>0;
@@ -1826,7 +1810,7 @@ bool jsvIsStringNumericStrict(const JsVar *var) {
   int chars = 0;
   while (jsvStringIteratorHasChar(&it)) {
     chars++;
-    char ch = jsvStringIteratorGetChar(&it);
+    char ch = jsvStringIteratorGetCharAndNext(&it);
     if (!isNumeric(ch)) {
       // test for leading zero ensures int_to_string(string_to_int(var))==var
       jsvStringIteratorFree(&it);
@@ -1834,7 +1818,6 @@ bool jsvIsStringNumericStrict(const JsVar *var) {
     }
     if (!hadNonZero && ch=='0') hasLeadingZero=true;
     if (ch!='0') hadNonZero=true;
-    jsvStringIteratorNext(&it);
   }
   jsvStringIteratorFree(&it);
   return chars>0 && (!hasLeadingZero || chars==1);
@@ -3989,8 +3972,7 @@ JsVar *jsvStringTrimRight(JsVar *srcString) {
   jsvStringIteratorNew(&dst, dstString, 0);
   int spaces = 0;
   while (jsvStringIteratorHasChar(&src)) {
-    char ch = jsvStringIteratorGetChar(&src);
-    jsvStringIteratorNext(&src);
+    char ch = jsvStringIteratorGetCharAndNext(&src);
 
     if (ch==' ') spaces++;
     else if (ch=='\n') {

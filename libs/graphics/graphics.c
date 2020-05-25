@@ -16,9 +16,6 @@
 #include "bitmap_font_4x6.h"
 
 
-#ifndef NO_VECTOR_FONT
-#include "vector_font.h"
-#endif
 #include "jsutils.h"
 #include "jsvar.h"
 #include "jsparse.h"
@@ -136,7 +133,7 @@ bool graphicsGetFromVar(JsGraphics *gfx, JsVar *parent) {
   JsVar *data = jsvObjectGetChild(parent, JS_HIDDEN_CHAR_STR"gfx", 0);
   assert(data);
   if (data) {
-    jsvGetString(data, (char*)&gfx->data, sizeof(JsGraphicsData)+1/*trailing zero*/);
+    jsvGetStringChars(data,0,(char*)&gfx->data, sizeof(JsGraphicsData));
     jsvUnLock(data);
     gfx->setPixel = graphicsFallbackSetPixel;
     gfx->getPixel = graphicsFallbackGetPixel;
@@ -205,6 +202,24 @@ void graphicsToDeviceCoordinates(const JsGraphics *gfx, int *x, int *y) {
   }
   if (gfx->data.flags & JSGRAPHICSFLAGS_INVERT_X) *x = (int)(gfx->data.width - (*x+1));
   if (gfx->data.flags & JSGRAPHICSFLAGS_INVERT_Y) *y = (int)(gfx->data.height - (*y+1));
+}
+
+// If graphics is flipped or rotated then the coordinates need modifying
+void graphicsToDeviceCoordinates16x(const JsGraphics *gfx, int *x, int *y) {
+  if (gfx->data.flags & JSGRAPHICSFLAGS_SWAP_XY) {
+    int t = *x;
+    *x = *y;
+    *y = t;
+  }
+  if (gfx->data.flags & JSGRAPHICSFLAGS_INVERT_X) *x = (int)((gfx->data.width-1)*16 - *x);
+  if (gfx->data.flags & JSGRAPHICSFLAGS_INVERT_Y) *y = (int)((gfx->data.height-1)*16 - *y);
+}
+
+unsigned short graphicsGetWidth(const JsGraphics *gfx) {
+  return (gfx->data.flags & JSGRAPHICSFLAGS_SWAP_XY) ? gfx->data.height : gfx->data.width;
+}
+unsigned short graphicsGetHeight(const JsGraphics *gfx) {
+  return (gfx->data.flags & JSGRAPHICSFLAGS_SWAP_XY) ? gfx->data.width : gfx->data.height;
 }
 
 // ----------------------------------------------------------------------------------------------
@@ -317,7 +332,7 @@ void graphicsDrawEllipse(JsGraphics *gfx, int posX1, int posY1, int posX2, int p
   int a2 = a*a;
   int b2 = b*b;
   int err = b2-(2*b-1)*a2;
-  int e2; 
+  int e2;
   bool changed = false;
 
   do {
@@ -350,7 +365,7 @@ void graphicsFillEllipse(JsGraphics *gfx, int posX1, int posY1, int posX2, int p
   int a2 = a*a;
   int b2 = b*b;
   int err = b2-(2*b-1)*a2;
-  int e2; 
+  int e2;
   bool changed = false;
 
   do {
@@ -405,7 +420,7 @@ void graphicsDrawLine(JsGraphics *gfx, int x1, int y1, int x2, int y2) {
 }
 
 
-
+// Fill poly - each member of vertices is 1/16th pixel
 void graphicsFillPoly(JsGraphics *gfx, int points, short *vertices) {
   typedef struct {
     short x,y;
@@ -419,11 +434,11 @@ void graphicsFillPoly(JsGraphics *gfx, int points, short *vertices) {
     // convert into device coordinates...
     int vx = v[i].x;
     int vy = v[i].y;
-    graphicsToDeviceCoordinates(gfx, &vx, &vy);
+    graphicsToDeviceCoordinates16x(gfx, &vx, &vy);
     v[i].x = (short)vx;
     v[i].y = (short)vy;
     // work out min and max
-    short y = v[i].y;
+    short y = v[i].y>>4;
     if (y<miny) miny=y;
     if (y>maxy) maxy=y;
   }
@@ -438,16 +453,15 @@ void graphicsFillPoly(JsGraphics *gfx, int points, short *vertices) {
   const int MAX_CROSSES = 64;
 
   // for each scanline
-  for (y=miny;y<=maxy;y++) {
+  for (y=miny<<4;y<=maxy<<4;y+=16) {
     short cross[MAX_CROSSES];
     bool slopes[MAX_CROSSES];
     int crosscnt = 0;
     // work out all the times lines cross the scanline
     j = points-1;
     for (i=0;i<points;i++) {
-      if ((y==miny && (v[i].y==y || v[j].y==y)) || // special-case top line
-          (v[i].y<y && v[j].y>=y) ||
-          (v[j].y<y && v[i].y>=y)) {
+      if ((v[i].y<=y && v[j].y>=y) ||
+          (v[j].y<=y && v[i].y>=y)) {
         if (crosscnt < MAX_CROSSES) {
           int l = v[j].y - v[i].y;
           if (l) { // don't do horiz lines - rely on the ends of the lines that join onto them
@@ -478,51 +492,12 @@ void graphicsFillPoly(JsGraphics *gfx, int points, short *vertices) {
     for (i=0;i<crosscnt;i++) {
       if (s==0) x=cross[i];
       if (slopes[i]) s++; else s--;
-      if (!s || i==crosscnt-1) graphicsFillRectDevice(gfx,x,y,cross[i],y,gfx->data.fgColor);
+      if (!s || i==crosscnt-1)
+        graphicsFillRectDevice(gfx,x>>4,y>>4,cross[i]>>4,y>>4,gfx->data.fgColor);
       if (jspIsInterrupted()) break;
     }
   }
 }
-
-#ifndef NO_VECTOR_FONT
-// prints character, returns width
-unsigned int graphicsFillVectorChar(JsGraphics *gfx, int x1, int y1, int size, char ch) {
-  // no need to modify coordinates as graphicsFillPoly does that
-  if (size<0) return 0;
-  if (ch<vectorFontOffset || ch-vectorFontOffset>=vectorFontCount) return 0;
-  int vertOffset = 0;
-  int i;
-  /* compute offset (I figure a ~50 iteration FOR loop is preferable to
-   * a 200 byte array) */
-  int fontOffset = ch-vectorFontOffset;
-  for (i=0;i<fontOffset;i++)
-    vertOffset += READ_FLASH_UINT8(&vectorFonts[i].vertCount);
-  VectorFontChar vector;
-  vector.vertCount = READ_FLASH_UINT8(&vectorFonts[fontOffset].vertCount);
-  vector.width = READ_FLASH_UINT8(&vectorFonts[fontOffset].width);
-  short verts[VECTOR_FONT_MAX_POLY_SIZE*2];
-  int idx=0;
-  for (i=0;i<vector.vertCount;i+=2) {
-    verts[idx+0] = (short)(x1 + (((READ_FLASH_UINT8(&vectorFontPolys[vertOffset+i+0])&0x7F)*size + (VECTOR_FONT_POLY_SIZE/2)) / VECTOR_FONT_POLY_SIZE));
-    verts[idx+1] = (short)(y1 + (((READ_FLASH_UINT8(&vectorFontPolys[vertOffset+i+1])&0x7F)*size + (VECTOR_FONT_POLY_SIZE/2)) / VECTOR_FONT_POLY_SIZE));
-    idx+=2;
-    if (READ_FLASH_UINT8(&vectorFontPolys[vertOffset+i+1]) & VECTOR_FONT_POLY_SEPARATOR) {
-      graphicsFillPoly(gfx,idx/2, verts);
-      if (jspIsInterrupted()) break;
-      idx=0;
-    }
-  }
-  return (vector.width * (unsigned int)size)/(VECTOR_FONT_POLY_SIZE*2);
-}
-
-// returns the width of a character
-unsigned int graphicsVectorCharWidth(JsGraphics *gfx, unsigned int size, char ch) {
-  NOT_USED(gfx);
-  if (ch<vectorFontOffset || ch-vectorFontOffset>=vectorFontCount) return 0;
-  unsigned char width = READ_FLASH_UINT8(&vectorFonts[ch-vectorFontOffset].width);
-  return (width * (unsigned int)size)/(VECTOR_FONT_POLY_SIZE*2);
-}
-#endif
 
 /// Draw a simple 1bpp image in foreground colour
 void graphicsDrawImage1bpp(JsGraphics *gfx, int x1, int y1, int width, int height, const unsigned char *pixelData) {
@@ -576,4 +551,3 @@ void graphicsIdle() {
   lcdIdle_SDL();
 #endif
 }
-

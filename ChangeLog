@@ -1,4 +1,50 @@
-            Add Array.includes
+     2v06 : Allow `"ram"` keyword at the top of a function to allow it to be pretokenised and loaded to RAM
+            Don't store line numbers for pretokenised functions
+            Fix 1-byte overflow when using UDP (#1799)
+            Remove 1-byte padding in Graphics lib
+            Bangle.js: Make SPI flash memory map address configurable, and check end bounds (#1807)
+            Bangle.js: More SPI flash memory map address to 0x60000000 to avoid ARM/nRF52 registers
+            nRF52: Fix issue with fast Notifications causing Notification data to be duplicated
+              http://forum.espruino.com/conversations/345949
+            Bangle.js: allow custom splash screen with .splash file
+            Pixl.js: Fix E.showMessage
+            Puck.js v1: Fix regression that stopped Puck.IR(data) working - Puck.IR(data,D26,D25) required
+            Puck.js v2: Ensure FET is used for IR output, fix selfTest errors for IR and Blue LED
+            Bangle.js: Big speed improvements for 120x120 and 80x80 gfx modes
+            Enable Graphics arraybuffer optimisations on all but low-end devices
+            Add specific Graphics optimisations for 1 and 8 bit rendering
+            Bangle.js: drawImage - add fast path for non-transparent 1 or 8bpp image blit (fix #1794)
+            Graphics.drawImage docs improvements (fix #1812)
+            Fix issue where it was possible to get an address of a non-memory-mapped FlashString
+            Graphics.drawImage: Allow 8 bit palettes to be specified
+            Bangle.js: Remove dumping of hardware state - saves some flash memory
+            microbit: Remove dumping of hardware state - saves some flash memory
+            Bangle.js: fix 'short' time for built-in locale
+            Bangle.js: fix 'speed' units for built-in locale
+            Graphics.createArrayBuffer now honors `msb:true` if `bpp>8`
+            Graphics.asImage: handle >8bpp correctly (fix #1797)
+            Graphics.asImage: Allow 'string' output type, reference Graphics buffer if possible
+            STM32: Fix 2v05 regression in hardware SPI.write (RX timeout)
+            Graphics: fix lock leak in g.reset()/g.clear(1)
+            Graphics: added drawImages to allow layers of rotated/scaled images to be composited 
+            Remove E.interpolate/2D (not used much, just using flash)
+            Bangle.js: use double math FFT to save a few bytes of flash
+            Storage.writeJSON (fix memory leak)
+            dump() is now aware of pretokenised code (fix #1821)
+            Merge jsvStringIteratorGetChar + jsvStringIteratorNext into jsvStringIteratorGetCharAndNext (fix #1816)
+            Fix 2v05 regression that stopped process.uncaughtException from working (had been moved to E.uncaughtException)
+            nRF52: If passkey or oob is set in setSecurity, ensure that the UART connection requires encryption (fix #1705)
+            Now report [ERASED] rather than ?[255] if we hit char code 255 while evaluating
+            Bangle.js: read `setting.json` at init and modify Bangle.beep/buzz behaviour accordingly
+            Tensorflow: remove some as-yet unused operators to free space
+            nRF52: Speed up bootloader, remove pauses on Pixl.js
+            Pixl.js: fix self-test/terminal print - write to screen immediately after newline unless in IRQ
+            Fix issue with iteration over arrays with negative entries (these should be converted to Strings)
+            Linux: improve command-line, allow recursive test directory and more than one test (eg wildcard + shell expansion)
+            Added new vector fonts supporting most of ISO8859-1
+            Graphics.fillPoly now uses 4 bit fixed point internally
+
+     2v05 : Add Array.includes
             Fix (Number.toFixed) rounding, eg (1234.505).toFixed(2)
             nRF52: If a central is connected to Espruino but isn't reading from UART, don't block waiting to send data
             ESP8266: reverse fix #1679
@@ -138,6 +184,14 @@
             Bangle.js: Now clear entire top/bottom row if there are widgets in it (fix #1790)
             Add Storage check at startup and erase everything if storage looks corrupt (fix #1766)
             Fix restriction on StorageFile filename length (8 to 28)
+            Fix array sort when compare fn returns floats <1 (fix #1798)
+            Fix Storage.write duplicate file issue in some rare cases (fix #1801)
+            Bangle.js: fix post-kickstarter issue adding widgets in bottom of screen (#1790)
+            Bangle.js: fix magnetometer self-calibration
+            Espruino Original: Removed Debugger, Tab complete, AT command networking from WIZnet networking build to free enough Flash
+            Espruino Pico: Added a normal build that doesn't contain CC3000 or WIZnet support
+            Espruino Pico: Removed Debugger and Vector font from WIZnet/CC3000 networking versions to free enough Flash
+            HYSTM32_28: Removed from build due to lack of interest and difficulty with increased firmware size
 
      2v04 : Allow \1..\9 escape codes in RegExp
             ESP8266: reading storage is not working for boot from user2 (fix #1507)

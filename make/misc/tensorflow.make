@@ -2,7 +2,6 @@ TENSOR_ROOT := $(ROOT)/libs/tensorflow
 CCSOURCES += \
 $(TENSOR_ROOT)/tensorflow/lite/experimental/micro/simple_memory_allocator.cc \
 $(TENSOR_ROOT)/tensorflow/lite/experimental/micro/memory_helpers.cc \
-$(TENSOR_ROOT)/tensorflow/lite/experimental/micro/micro_error_reporter.cc \
 $(TENSOR_ROOT)/tensorflow/lite/experimental/micro/micro_mutable_op_resolver.cc \
 $(TENSOR_ROOT)/tensorflow/lite/experimental/micro/debug_log_numbers.cc \
 $(TENSOR_ROOT)/tensorflow/lite/experimental/micro/test_helpers.cc \
@@ -61,4 +60,4 @@ INCLUDE += \
 -I$(TENSOR_ROOT)/third_party/flatbuffers/include
 
 CCFLAGS += -DNDEBUG -g -DTF_LITE_STATIC_MEMORY --std=c++11 -g -fno-rtti -fpermissive -Wno-sign-compare -Wno-conversion -Wno-sign-conversion -Wno-missing-field-initializers -Wno-type-limits -Wno-unused-parameter -Wno-unused-variable
-
+DEFINES += -DUSE_TENSORFLOW=1

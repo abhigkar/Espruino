@@ -384,6 +384,9 @@ volatile uint8_t hrmHistoryIdx;
 JsVar *promiseBeep;
 /// Promise when buzz is finished
 JsVar *promiseBuzz;
+//
+unsigned short beepFreq;
+unsigned char buzzAmt;
 
 typedef enum {
   JSBF_NONE,
@@ -393,12 +396,16 @@ typedef enum {
   JSBF_WAKEON_BTN3   = 8,
   JSBF_WAKEON_TOUCH  = 16,
   JSBF_WAKEON_TWIST  = 32,
+  JSBF_BEEP_VIBRATE  = 64, // use vibration motor for beep
+  JSBF_ENABLE_BEEP  = 128,
+  JSBF_ENABLE_BUZZ  = 256,
 
   JSBF_DEFAULT =
       JSBF_WAKEON_TWIST|
       JSBF_WAKEON_BTN1|JSBF_WAKEON_BTN2|JSBF_WAKEON_BTN3
 } JsBangleFlags;
 volatile JsBangleFlags bangleFlags;
+
 
 typedef enum {
   JSBT_NONE,
@@ -1147,7 +1154,7 @@ void jswrap_banglejs_lcdWr(JsVarInt cmd, JsVar *data) {
 }
 Set the power to the Heart rate monitor
 
-When on, data is output via the `GPS` event on `Bangle`:
+When on, data is output via the `HRM` event on `Bangle`:
 
 ```
 Bangle.setHRMPower(1);
@@ -1241,12 +1248,12 @@ void jswrap_banglejs_setCompassPower(bool isOn) {
   mag.x = 0;
   mag.y = 0;
   mag.z = 0;
-  magmin.x = 0;
-  magmin.y = 0;
-  magmin.z = 0;
-  magmax.x = 0;
-  magmax.y = 0;
-  magmax.z = 0;
+  magmin.x = 32767;
+  magmin.y = 32767;
+  magmin.z = 32767;
+  magmax.x = -32768;
+  magmax.y = -32768;
+  magmax.z = -32768;
 }
 
 /*JSON{
@@ -1353,7 +1360,7 @@ void jswrap_banglejs_init() {
   jshDelayMicroseconds(50000);
   jswrap_banglejs_ioWr(0,0);
   jswrap_banglejs_ioWr(IOEXP_HRM,1); // HRM off
-  jswrap_banglejs_ioWr(1,0); // ?
+  jswrap_banglejs_ioWr(IOEXP_GPS,0); // GPS off
   jswrap_banglejs_ioWr(IOEXP_LCD_RESET,0); // LCD reset on
   jshDelayMicroseconds(100000);
   jswrap_banglejs_ioWr(IOEXP_LCD_RESET,1); // LCD reset off
@@ -1398,23 +1405,37 @@ void jswrap_banglejs_init() {
 
   graphicsClear(&gfx);
   if (showSplashScreen) {
-    JsVar *img = jswrap_banglejs_getLogo();
+    bool drawInfo = false;
+    JsVar *img = jsfReadFile(jsfNameFromString(".splash"),0,0);
+    int w,h;
+    if (!jsvIsString(img) || !jsvGetStringLength(img)) {
+      jsvUnLock(img);
+      drawInfo = true;
+      img = jswrap_banglejs_getLogo();
+      w = 222;
+      h = 104;
+    } else {
+      w = (int)(unsigned char)jsvGetCharInString(img, 0);
+      h = (int)(unsigned char)jsvGetCharInString(img, 1);
+    }
     graphicsSetVar(&gfx);
-    int y=(240-104)/2;
-    jsvUnLock(jswrap_graphics_drawImage(graphics,img,(240-222)/2,y,0));
+    int y=(240-h)/2;
+    jsvUnLock(jswrap_graphics_drawImage(graphics,img,(240-w)/2,y,0));
     jsvUnLock(img);
-    y += 104-28;
-    char addrStr[20];
+    if (drawInfo) {
+      y += h-28;
+      char addrStr[20];
 #ifndef EMSCRIPTEN
-    JsVar *addr = jswrap_ble_getAddress(); // Write MAC address in bottom right
+      JsVar *addr = jswrap_ble_getAddress(); // Write MAC address in bottom right
 #else
-    JsVar *addr = jsvNewFromString("");
+      JsVar *addr = jsvNewFromString("");
 #endif
-    jsvGetString(addr, addrStr, sizeof(addrStr));
-    jsvUnLock(addr);
-    jswrap_graphics_drawCString(&gfx,8,y,JS_VERSION);
-    jswrap_graphics_drawCString(&gfx,8,y+10,addrStr);
-    jswrap_graphics_drawCString(&gfx,8,y+20,"Copyright 2019 G.Williams");
+      jsvGetString(addr, addrStr, sizeof(addrStr));
+      jsvUnLock(addr);
+      jswrap_graphics_drawCString(&gfx,8,y,JS_VERSION);
+      jswrap_graphics_drawCString(&gfx,8,y+10,addrStr);
+      jswrap_graphics_drawCString(&gfx,8,y+20,"Copyright 2019 G.Williams");
+    }
   }
   graphicsSetVar(&gfx);
 
@@ -1492,6 +1513,32 @@ void jswrap_banglejs_init() {
   if (channel!=EV_NONE) jshSetEventCallback(channel, btn4Handler);
   channel = jshPinWatch(BTN5_PININDEX, true);
   if (channel!=EV_NONE) jshSetEventCallback(channel, btn5Handler);
+
+  buzzAmt = 0;
+  beepFreq = 0;
+  // Read settings and change beep/buzz behaviour...
+  JsVar *settingsFN = jsvNewFromString("setting.json");
+  JsVar *settings = jswrap_storage_readJSON(settingsFN,true);
+  JsVar *v;
+  v = jsvIsObject(settings) ? jsvObjectGetChild(settings,"beep",0) : 0;
+  if (v && jsvGetBool(v)==false) {
+    bangleFlags &= ~JSBF_ENABLE_BEEP;
+  } else {
+    bangleFlags |= JSBF_ENABLE_BEEP;
+    if (!v || jsvIsStringEqual(v,"vib")) // default to use vibration for beep
+      bangleFlags |= JSBF_BEEP_VIBRATE;
+    else
+      bangleFlags &= ~JSBF_BEEP_VIBRATE;
+  }
+  jsvUnLock(v);
+  v = jsvIsObject(settings) ? jsvObjectGetChild(settings,"vibrate",0) : 0;
+  if (v && jsvGetBool(v)==false) {
+    bangleFlags &= ~JSBF_ENABLE_BUZZ;
+  } else {
+    bangleFlags |= JSBF_ENABLE_BUZZ;
+  }
+  jsvUnLock3(v,settings,settingsFN);
+
 }
 
 /*JSON{
@@ -1809,6 +1856,19 @@ bool jswrap_banglejs_gps_character(char ch) {
 }
 
 /*JSON{
+    "type" : "staticproperty",
+    "class" : "Bangle",
+    "name" : "F_BEEPSET",
+    "generate_full" : "true",
+    "return" : ["bool",""],
+    "ifdef" : "BANGLEJS"
+}
+Feature flag - If true, this Bangle.js firmware reads `setting.json` and
+modifies beep & buzz behaviour accordingly (the bootloader
+doesn't need to do it).
+*/
+
+/*JSON{
     "type" : "staticmethod",
     "class" : "Bangle",
     "name" : "dbg",
@@ -1963,6 +2023,21 @@ JsVar *jswrap_banglejs_project(JsVar *latlong) {
   return o;
 }
 
+
+static NO_INLINE void _jswrap_banglejs_setVibration() {
+  int beep = 0;
+  if (bangleFlags & JSBF_BEEP_VIBRATE)
+    beep = beepFreq;
+
+  if (buzzAmt==0 && beep==0)
+    jshPinOutput(VIBRATE_PIN,0); // vibrate off
+  else if (beep==0) { // vibrate only
+    jshPinAnalogOutput(VIBRATE_PIN, 0.4 + buzzAmt*0.6/255, 1000, JSAOF_NONE);
+  } else { // beep and vibrate
+    jshPinAnalogOutput(VIBRATE_PIN, 0.2 + buzzAmt*0.6/255, beep, JSAOF_NONE);
+  }
+}
+
 /*JSON{
     "type" : "staticmethod",
     "class" : "Bangle",
@@ -1979,7 +2054,12 @@ JsVar *jswrap_banglejs_project(JsVar *latlong) {
 Use the piezo speaker to Beep for a certain time period and frequency
 */
 void jswrap_banglejs_beep_callback() {
-  jshPinSetState(SPEAKER_PIN, JSHPINSTATE_GPIO_IN);
+  beepFreq = 0;
+  if (bangleFlags & JSBF_BEEP_VIBRATE) {
+    _jswrap_banglejs_setVibration();
+  } else {
+    jshPinSetState(SPEAKER_PIN, JSHPINSTATE_GPIO_IN);
+  }
 
   jspromise_resolve(promiseBeep, 0);
   jsvUnLock(promiseBeep);
@@ -1988,6 +2068,7 @@ void jswrap_banglejs_beep_callback() {
 
 JsVar *jswrap_banglejs_beep(int time, int freq) {
   if (freq<=0) freq=4000;
+  if (freq>60000) freq=60000;
   if (time<=0) time=200;
   if (time>5000) time=5000;
   if (promiseBeep) {
@@ -1997,7 +2078,14 @@ JsVar *jswrap_banglejs_beep(int time, int freq) {
   promiseBeep = jspromise_create();
   if (!promiseBeep) return 0;
 
-  jshPinAnalogOutput(SPEAKER_PIN, 0.5, freq, JSAOF_NONE);
+  if (bangleFlags & JSBF_ENABLE_BEEP) {
+    beepFreq = freq;
+    if (bangleFlags & JSBF_BEEP_VIBRATE) {
+      _jswrap_banglejs_setVibration();
+    } else {
+      jshPinAnalogOutput(SPEAKER_PIN, 0.5, freq, JSAOF_NONE);
+    }
+  }
   jsiSetTimeout(jswrap_banglejs_beep_callback, time);
   return jsvLockAgain(promiseBeep);
 }
@@ -2018,7 +2106,8 @@ JsVar *jswrap_banglejs_beep(int time, int freq) {
 Use the vibration motor to buzz for a certain time period
 */
 void jswrap_banglejs_buzz_callback() {
-  jshPinOutput(VIBRATE_PIN,0); // vibrate off
+  buzzAmt = 0;
+  _jswrap_banglejs_setVibration();
 
   jspromise_resolve(promiseBuzz, 0);
   jsvUnLock(promiseBuzz);
@@ -2037,7 +2126,11 @@ JsVar *jswrap_banglejs_buzz(int time, JsVarFloat amt) {
   promiseBuzz = jspromise_create();
   if (!promiseBuzz) return 0;
 
-  jshPinAnalogOutput(VIBRATE_PIN, 0.4 + amt*0.6, 1000, JSAOF_NONE);
+  if (bangleFlags & JSBF_ENABLE_BUZZ) {
+    buzzAmt = (unsigned char)(amt*255);
+    _jswrap_banglejs_setVibration();
+  }
+
   jsiSetTimeout(jswrap_banglejs_buzz_callback, time);
   return jsvLockAgain(promiseBuzz);
 }

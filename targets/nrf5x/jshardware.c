@@ -1713,7 +1713,7 @@ bool jshFlashWriteProtect(uint32_t addr) {
 /// Return start address and size of the flash page the given address resides in. Returns false if no page.
 bool jshFlashGetPage(uint32_t addr, uint32_t * startAddr, uint32_t * pageSize) {
 #ifdef SPIFLASH_BASE
-  if (addr >= SPIFLASH_BASE) {
+  if ((addr >= SPIFLASH_BASE) && (addr < (SPIFLASH_BASE+SPIFLASH_LENGTH))) {
     *startAddr = (uint32_t)(addr & ~(SPIFLASH_PAGESIZE-1));
     *pageSize = SPIFLASH_PAGESIZE;
     return true;
@@ -1740,18 +1740,42 @@ JsVar *jshFlashGetFree() {
   /* Try and find pages after the end of firmware but before saved code */
   extern uint32_t LINKER_ETEXT_VAR; // end of flash text (binary) section
   uint32_t firmwareEnd = (uint32_t)&LINKER_ETEXT_VAR;
+  extern uint32_t __isr_vector; // defined in gcc_startup_nrf5x.S, first address of binary
+  uint32_t firmwareStart = (uint32_t)& __isr_vector;
   uint32_t pAddr, pSize;
   jshFlashGetPage(firmwareEnd, &pAddr, &pSize);
   firmwareEnd = pAddr+pSize;
+#ifdef SPIFLASH_BASE
+#if SPIFLASH_BASE <= FLASH_SAVED_CODE_START
+  // we have storage in external flash (so we cannot take is as end of free internal flash)
+  if (firmwareEnd < firmwareStart+FLASH_AVAILABLE_FOR_CODE)
+    addFlashArea(jsFreeFlash, firmwareEnd, FLASH_AVAILABLE_FOR_CODE-(firmwareEnd-firmwareStart)); // size = available flash - size of binary
+#if SPIFLASH_BASE < FLASH_SAVED_CODE_START
+  // add SPI FLASH below code start
+  addFlashArea(jsFreeFlash, SPIFLASH_BASE, FLASH_SAVED_CODE_START-SPIFLASH_BASE);
+#endif
+#if (FLASH_SAVED_CODE_START+FLASH_SAVED_CODE_LENGTH) < (SPIFLASH_BASE+SPIFLASH_LENGTH)
+  // add SPI flash space between code end and end of flash
+  addFlashArea(jsFreeFlash, (FLASH_SAVED_CODE_START+FLASH_SAVED_CODE_LENGTH), (SPIFLASH_BASE+SPIFLASH_LENGTH)-(FLASH_SAVED_CODE_START+FLASH_SAVED_CODE_LENGTH));
+#endif
+#else
+  // we have storage in internal flash
   if (firmwareEnd < FLASH_SAVED_CODE_START)
     addFlashArea(jsFreeFlash, firmwareEnd, FLASH_SAVED_CODE_START-firmwareEnd);
+  // add whole SPI flash as free
+  addFlashArea(jsFreeFlash, SPIFLASH_BASE, SPIFLASH_LENGTH);
+#endif
+#else
+  if (firmwareEnd < FLASH_SAVED_CODE_START)
+    addFlashArea(jsFreeFlash, firmwareEnd, FLASH_SAVED_CODE_START-firmwareEnd);
+#endif
   return jsFreeFlash;
 }
 
 /// Erase the flash page containing the address.
 void jshFlashErasePage(uint32_t addr) {
 #ifdef SPIFLASH_BASE
-  if (addr >= SPIFLASH_BASE) {
+  if ((addr >= SPIFLASH_BASE) && (addr < (SPIFLASH_BASE+SPIFLASH_LENGTH))) {
     addr &= 0xFFFFFF;
     //jsiConsolePrintf("SPI Erase %d\n",addr);
     unsigned char b[4];
@@ -1791,7 +1815,7 @@ void jshFlashErasePage(uint32_t addr) {
  */
 void jshFlashRead(void * buf, uint32_t addr, uint32_t len) {
 #ifdef SPIFLASH_BASE
-  if (addr >= SPIFLASH_BASE) {
+  if ((addr >= SPIFLASH_BASE) && (addr < (SPIFLASH_BASE+SPIFLASH_LENGTH))) {
     addr &= 0xFFFFFF;
     //jsiConsolePrintf("SPI Read %d %d\n",addr,len);
     unsigned char b[4];
@@ -1817,7 +1841,7 @@ void jshFlashRead(void * buf, uint32_t addr, uint32_t len) {
 void jshFlashWrite(void * buf, uint32_t addr, uint32_t len) {
   //jsiConsolePrintf("\njshFlashWrite 0x%x addr 0x%x -> 0x%x, len %d\n", *(uint32_t*)buf, (uint32_t)buf, addr, len);
 #ifdef SPIFLASH_BASE
-  if (addr >= SPIFLASH_BASE) {
+  if ((addr >= SPIFLASH_BASE) && (addr < (SPIFLASH_BASE+SPIFLASH_LENGTH))) {
     addr &= 0xFFFFFF;
     //jsiConsolePrintf("SPI Write %d %d\n",addr, len);
     unsigned char b[5];
@@ -1912,11 +1936,12 @@ void jshFlashWrite(void * buf, uint32_t addr, uint32_t len) {
 }
 
 // Just pass data through, since we can access flash at the same address we wrote it
-size_t jshFlashGetMemMapAddress(size_t ptr) {
+size_t jshFlashGetMemMapAddress(size_t addr) {
 #ifdef SPIFLASH_BASE
-  if (ptr > SPIFLASH_BASE) return 0;
+  if ((addr >= SPIFLASH_BASE) && (addr < (SPIFLASH_BASE+SPIFLASH_LENGTH)))
+    return 0;
 #endif
-  return ptr;
+  return addr;
 }
 
 /// Enter simple sleep mode (can be woken up by interrupts). Returns true on success

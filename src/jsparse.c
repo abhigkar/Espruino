@@ -320,15 +320,21 @@ NO_INLINE bool jspeFunctionArguments(JsVar *funcVar) {
 
 // Parse function, assuming we're on '{'. funcVar can be 0
 NO_INLINE bool jspeFunctionDefinitionInternal(JsVar *funcVar, bool expressionOnly) {
+  bool forcePretokenise = false;
+
   if (expressionOnly) {
     if (funcVar)
       funcVar->flags = (funcVar->flags & ~JSV_VARTYPEMASK) | JSV_FUNCTION_RETURN;
   } else {
     JSP_MATCH('{');
-
   #ifndef SAVE_ON_FLASH
-    if (lex->tk==LEX_STR && !strcmp(jslGetTokenValueAsString(), "compiled")) {
-      jsWarn("Function marked with \"compiled\" uploaded in source form");
+    if (lex->tk==LEX_STR) {
+      if (!strcmp(jslGetTokenValueAsString(), "compiled"))
+        jsWarn("Function marked with \"compiled\" uploaded in source form");
+      if (lex->tk==LEX_STR && !strcmp(jslGetTokenValueAsString(), "ram")) {
+        JSP_ASSERT_MATCH(LEX_STR);
+        forcePretokenise = true;
+      }
     }
   #endif
 
@@ -342,7 +348,7 @@ NO_INLINE bool jspeFunctionDefinitionInternal(JsVar *funcVar, bool expressionOnl
   }
   // Get the line number (if needed)
   JsVarInt lineNumber = 0;
-  if (funcVar && lex->lineNumberOffset) {
+  if (funcVar && lex->lineNumberOffset && !(forcePretokenise||jsfGetFlag(JSF_PRETOKENISE))) {
     // jslGetLineNumber is slow, so we only do it if we have debug info
     lineNumber = (JsVarInt)jslGetLineNumber() + (JsVarInt)lex->lineNumberOffset - 1;
   }
@@ -369,20 +375,20 @@ NO_INLINE bool jspeFunctionDefinitionInternal(JsVar *funcVar, bool expressionOnl
   if (funcVar && lastTokenEnd>0) {
     // code var
     JsVar *funcCodeVar;
-    if (jsvIsNativeString(lex->sourceVar)) {
+    if (!forcePretokenise && jsvIsNativeString(lex->sourceVar)) {
       /* If we're parsing from a Native String (eg. E.memoryArea, E.setBootCode) then
       use another Native String to load function code straight from flash */
       int s = (int)jsvStringIteratorGetIndex(&funcBegin.it) - 1;
       funcCodeVar = jsvNewNativeString(lex->sourceVar->varData.nativeStr.ptr + s, (unsigned int)(lastTokenEnd - s));
 #ifdef SPIFLASH_BASE
-    } else if (jsvIsFlashString(lex->sourceVar)) {
+    } else if (!forcePretokenise && jsvIsFlashString(lex->sourceVar)) {
         /* If we're parsing from a Flash String (eg. loaded from Storage on Bangle.js) then
       use another Flash String to load function code straight from flash*/
         int s = (int)jsvStringIteratorGetIndex(&funcBegin.it) - 1;
         funcCodeVar = jsvNewFlashString(lex->sourceVar->varData.nativeStr.ptr + s, (unsigned int)(lastTokenEnd - s));
 #endif
     } else {
-      if (jsfGetFlag(JSF_PRETOKENISE)) {
+      if (jsfGetFlag(JSF_PRETOKENISE) || forcePretokenise) {
         funcCodeVar = jslNewTokenisedStringFromLexer(&funcBegin, (size_t)lastTokenEnd);
       } else {
         funcCodeVar = jslNewStringFromLexer(&funcBegin, (size_t)lastTokenEnd);
@@ -1372,9 +1378,8 @@ JsVar *jspeTemplateLiteral() {
       jsvStringIteratorNew(&it, template, 0);
       jsvStringIteratorNew(&dit, a, 0);
       while (jsvStringIteratorHasChar(&it)) {
-        char ch = jsvStringIteratorGetChar(&it);
+        char ch = jsvStringIteratorGetCharAndNext(&it);
         if (ch=='$') {
-          jsvStringIteratorNext(&it);
           ch = jsvStringIteratorGetChar(&it);
           if (ch=='{') {
             // Now parse out the expression
@@ -1385,8 +1390,7 @@ JsVar *jspeTemplateLiteral() {
             JsvStringIterator eit;
             jsvStringIteratorNew(&eit, expr, 0);
             while (jsvStringIteratorHasChar(&it)) {
-              ch = jsvStringIteratorGetChar(&it);
-              jsvStringIteratorNext(&it);
+              ch = jsvStringIteratorGetCharAndNext(&it);
               if (ch=='{') brackets++;
               if (ch=='}') {
                 brackets--;
@@ -1405,7 +1409,6 @@ JsVar *jspeTemplateLiteral() {
           }
         } else {
           jsvStringIteratorAppend(&dit, ch);
-          jsvStringIteratorNext(&it);
         }
       }
       jsvStringIteratorFree(&it);
@@ -1637,9 +1640,8 @@ NO_INLINE JsVar *jspeFactor() {
     jsvStringIteratorNew(&it, regex, 0);
     while (jsvStringIteratorHasChar(&it)) {
       regexLen++;
-      if (jsvStringIteratorGetChar(&it)=='/')
+      if (jsvStringIteratorGetCharAndNext(&it)=='/')
         regexEnd = regexLen;
-      jsvStringIteratorNext(&it);
     }
     jsvStringIteratorFree(&it);
     JsVar *flags = 0;

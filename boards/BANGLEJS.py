@@ -33,13 +33,14 @@ info = {
      'TENSORFLOW'     
    ],
    'makefile' : [
-     'DEFINES += -DUSE_TENSORFLOW',
      'DEFINES += -DCONFIG_NFCT_PINS_AS_GPIOS', # Allow the reset pin to work
      'DEFINES += -DBUTTONPRESS_TO_REBOOT_BOOTLOADER',
+     'DEFINES += -DDFU_APP_DATA_RESERVED=0', # allow firmware updates right up to the amount of available flash
      'DEFINES+=-DBLUETOOTH_NAME_PREFIX=\'"Bangle.js"\'',
      'DEFINES+=-DCUSTOM_GETBATTERY=jswrap_banglejs_getBattery',
      'DEFINES+=-DDUMP_IGNORE_VARIABLES=\'"g\\0"\'',
      'DEFINES+=-DUSE_FONT_6X8 -DGRAPHICS_PALETTED_IMAGES',
+     'DEFINES+=-DNO_DUMP_HARDWARE_INITIALISATION', # don't dump hardware init - not used and saves 1k of flash
      'DFU_PRIVATE_KEY=targets/nrf5x_dfu/dfu_private_key.pem',
      'DFU_SETTINGS=--application-version 0xff --hw-version 52 --sd-req 0x8C',
      'INCLUDE += -I$(ROOT)/libs/banglejs -I$(ROOT)/libs/misc',
@@ -67,7 +68,7 @@ chip = {
   'adc' : 1,
   'dac' : 0,
   'saved_code' : {
-    'address' : 0x40000000, # put this in external flash
+    'address' : 0x60000000, # put this in external spiflash (see below)
     'page_size' : 4096,
     'pages' : 1024, # Entire 4MB of external flash
     'flash_available' : 512 - ((31 + 8 + 2)*4) # Softdevice uses 31 pages of flash, bootloader 8, FS 2. Each page is 4 kb.
@@ -132,7 +133,8 @@ devices = {
             'pin_miso' : 'D20', # D1
             'pin_wp' : 'D31', # D2
             'pin_rst' : 'D17', # D3
-            'size' : 4096*1024 # 4MB
+            'size' : 4096*1024, # 4MB
+            'memmap_base' : 0x60000000 # map into the address space (in software)
           }
 };
 

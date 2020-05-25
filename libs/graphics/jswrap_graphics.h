@@ -17,6 +17,15 @@
 #include "jsvar.h"
 #include "graphics.h"
 
+#ifndef SAVE_ON_FLASH
+#ifndef ESPRUINOBOARD
+#define GRAPHICS_DRAWIMAGE_ROTATED
+#endif
+#endif
+#if defined(LINUX) || defined(BANGLEJS)
+#define GRAPHICS_FAST_PATHS // execute more optimised code when no rotation/etc
+#endif
+
 #ifdef GRAPHICS_PALETTED_IMAGES
 // 16 color MAC OS palette
 extern const uint16_t PALETTE_4BIT[16];
@@ -70,7 +79,8 @@ JsVar *jswrap_graphics_drawPoly(JsVar *parent, JsVar *poly, bool closed);
 JsVar *jswrap_graphics_fillPoly(JsVar *parent, JsVar *poly);
 JsVar *jswrap_graphics_setRotation(JsVar *parent, int rotation, bool reflect);
 JsVar *jswrap_graphics_drawImage(JsVar *parent, JsVar *image, int xPos, int yPos, JsVar *options);
-JsVar *jswrap_graphics_asImage(JsVar *parent);
+JsVar *jswrap_graphics_drawImages(JsVar *parent, JsVar *layersVar, JsVar *options);
+JsVar *jswrap_graphics_asImage(JsVar *parent, JsVar *imgType);
 JsVar *jswrap_graphics_getModified(JsVar *parent, bool reset);
 JsVar *jswrap_graphics_scroll(JsVar *parent, int x, int y);
 JsVar *jswrap_graphics_asBMP(JsVar *parent);

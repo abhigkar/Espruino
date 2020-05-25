@@ -269,11 +269,10 @@ void jsiConsolePrintStringVarUntilEOL(JsVar *v, size_t fromCharacter, size_t max
   JsvStringIterator it;
   jsvStringIteratorNew(&it, v, fromCharacter);
   while (jsvStringIteratorHasChar(&it) && chars<maxChars) {
-    char ch = jsvStringIteratorGetChar(&it);
+    char ch = jsvStringIteratorGetCharAndNext(&it);
     if (ch == '\n') break;
     jsiConsolePrintChar(ch);
     chars++;
-    jsvStringIteratorNext(&it);
   }
   jsvStringIteratorFree(&it);
   if (andBackup) {
@@ -288,11 +287,10 @@ void jsiConsolePrintStringVarWithNewLineChar(JsVar *v, size_t fromCharacter, cha
   JsvStringIterator it;
   jsvStringIteratorNew(&it, v, fromCharacter);
   while (jsvStringIteratorHasChar(&it)) {
-    char ch = jsvStringIteratorGetChar(&it);
+    char ch = jsvStringIteratorGetCharAndNext(&it);
     if (ch == '\n') jsiConsolePrintChar('\r');
     jsiConsolePrintChar(ch);
     if (ch == '\n' && newLineCh) jsiConsolePrintChar(newLineCh);
-    jsvStringIteratorNext(&it);
   }
   jsvStringIteratorFree(&it);
 }
@@ -637,6 +635,7 @@ void jsiDumpDeviceInitialisation(vcbprintf_callback user_callback, void *user_da
 
 /** Dump all the code required to initialise hardware to this string */
 void jsiDumpHardwareInitialisation(vcbprintf_callback user_callback, void *user_data, bool humanReadableDump) {
+#ifndef NO_DUMP_HARDWARE_INITIALISATION // eg. Banglejs doesn't need to dump hardware initialisation
   if (jsiStatus&JSIS_ECHO_OFF) user_callback("echo(0);", user_data);
 #ifndef SAVE_ON_FLASH
   if (pinBusyIndicator != DEFAULT_BUSY_PIN_INDICATOR) {
@@ -715,6 +714,7 @@ void jsiDumpHardwareInitialisation(vcbprintf_callback user_callback, void *user_
 #ifdef BLUETOOTH
   if (humanReadableDump)
     jswrap_ble_dumpBluetoothInitialisation(user_callback, user_data);
+#endif
 #endif
 }
 
@@ -1161,7 +1161,7 @@ void jsiCheckErrors() {
   bool reportedError = false;
   JsVar *exception = jspGetException();
   if (exception) {
-    if (jsiExecuteEventCallbackOn("E", JS_EVENT_PREFIX"uncaughtException", 1, &exception)) {
+    if (jsiExecuteEventCallbackOn("process", JS_EVENT_PREFIX"uncaughtException", 1, &exception)) {
       jsvUnLock(exception);
       exception = 0;
     }
@@ -1733,18 +1733,26 @@ NO_INLINE bool jsiExecuteEventCallback(JsVar *thisVar, JsVar *callbackVar, unsig
   return true;
 }
 
-// Execute the named Event callback on the named object, and return true if it exists
-bool jsiExecuteEventCallbackOn(const char *objectName, const char *cbName, unsigned int argCount, JsVar **argPtr) {
+
+// Execute the named Event callback on object, and return true if it exists
+bool jsiExecuteEventCallbackName(JsVar *obj, const char *cbName, unsigned int argCount, JsVar **argPtr) {
   bool executed = false;
-  JsVar *obj = jsvObjectGetChild(execInfo.root, objectName, 0);
   if (jsvHasChildren(obj)) {
     JsVar *callback = jsvObjectGetChild(obj, cbName, 0);
     if (callback) {
       jsiExecuteEventCallback(obj, callback, argCount, argPtr);
       executed = true;
     }
-    jsvUnLock2(callback, obj);
+    jsvUnLock(callback);
   }
+  return executed;
+}
+
+// Execute the named Event callback on the named object, and return true if it exists
+bool jsiExecuteEventCallbackOn(const char *objectName, const char *cbName, unsigned int argCount, JsVar **argPtr) {
+  JsVar *obj = jsvObjectGetChild(execInfo.root, objectName, 0);
+  bool executed = jsiExecuteEventCallbackName(obj, cbName, argCount, argPtr);
+  jsvUnLock(obj);
   return executed;
 }
 
@@ -2385,7 +2393,8 @@ void jsiDumpState(vcbprintf_callback user_callback, void *user_data) {
 
   JsVar *code = jsfGetBootCodeFromFlash(false);
   if (code) {
-    cbprintf(user_callback, user_data, "// Code saved with E.setBootCode\n%v\n", code);
+    cbprintf(user_callback, user_data, "// Code saved with E.setBootCode\n");
+    jslPrintTokenisedString(code, user_callback, user_data);
     jsvUnLock(code);
   }
 }
