@@ -91,6 +91,7 @@ bool nrf_dfu_enter_check(void) {
 bool dfu_enter_check(void) {
 #endif
   bool dfu_start = get_btn1_state();
+  if (NRF_POWER->GPREGRET == 1) { NRF_POWER->GPREGRET=0; return true; }
 #ifdef BUTTONPRESS_TO_REBOOT_BOOTLOADER
     // if DFU looks invalid, go straight to bootloader
     if (s_dfu_settings.bank_0.bank_code == NRF_DFU_BANK_INVALID) {

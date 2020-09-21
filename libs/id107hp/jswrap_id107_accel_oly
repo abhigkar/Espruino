@@ -67,7 +67,7 @@ JshI2CInfo i2cHeartRate; //Heart Rate
 #define TOUCH_PIN_SCL 15/* D15 */
 #define TOUCH_PIN_RDY 17/* D17 */
 
-#define I2C_TIMEOUT 100000
+#define I2C_TIMEOUT 400
 
 /// How often should be poll for accelerometer?
 volatile uint16_t pollInterval; // in ms
@@ -83,8 +83,28 @@ int8_t accHistory[ACCEL_HISTORY_LEN*3];
 /// Index in accelerometer history of the last sample
 volatile uint8_t accHistoryIdx;
 
-bool touch_on;
+static bool touch_on;
+static bool doInitialSetup;
+static bool showReset;
+static bool reseed;
+static uint8_t currentState;
 
+typedef struct {
+	/*	Boolean to keep track of Prox   Events	*/
+	bool prox;
+	/*	Boolean to keep track of Touch Events	*/
+	bool touch;
+	/*	Boolean to keep track of Tap Events	*/
+	bool tap;
+	/*	Boolean to keep track of FlickLeft Events	*/
+	bool flickLeft;
+	/*	Boolean to keep track of FlickRight Events	*/
+	bool flickRight;
+	/*	Boolean to keep track of Slide Events	*/
+	bool slide;
+} events_data;
+
+static events_data events;
 
 typedef enum {
   JSBF_NONE,
@@ -173,7 +193,6 @@ void peripheralPollHandler() {
     id107Tasks |= JSBT_ACCEL_DATA;
 
   }
-  jswrap_id107hp_readTouch();
 }
 
 #endif // !EMSCRIPTEN
@@ -303,6 +322,7 @@ void jswrap_id107hp_init() {
 void jswrap_id107hp_kill() {
 #ifndef EMSCRIPTEN
   jstStopExecuteFn(peripheralPollHandler, 0);
+  jswrap_id107hp_rdyPinIRQStop();
 #endif
 }
 
@@ -406,470 +426,67 @@ void jswrap_id107hp_world() {
     jsiConsolePrint("Hello World!\r\n");
 }
 
-
-void touch_start_wait(){
-  int timeout;
-  timeout = I2C_TIMEOUT*2;
-  while (nrf_gpio_pin_read(TOUCH_PIN_RDY) && --timeout);
-}
-
-void touch_stop_wait(){
-  int timeout;
-  timeout = I2C_TIMEOUT*2;
-  while (nrf_gpio_pin_read(TOUCH_PIN_RDY) && --timeout);
-  timeout = I2C_TIMEOUT*2;
-  while (!nrf_gpio_pin_read(TOUCH_PIN_RDY) && --timeout);
-} 
-//if (!timeout) jsExceptionHere(JSET_INTERNALERROR, "Timeout (Magnetometer)");
-//jshPinSetState(ACCEL_PIN_INT, JSHPINSTATE_GPIO_IN);
-
-
 /*JSON{
-    "type" : "staticmethod",
-    "class" : "Id107hp",
-    "name" : "touch_init",
-    "generate" : "jswrap_id107hp_touch_init"
+	  "type" : "staticmethod",
+	  "class" : "Id107hp",
+	  "name" : "rdyPinIRQStop",
+	  "generate" : "jswrap_id107hp_rdyPinIRQStop"
 }
-Init the Touch sensor
+A Test methos for print message
 */
+void jswrap_id107hp_rdyPinIRQStop(){
+   jshPinWatch(TOUCH_PIN_RDY, false);
+}
 
-void jswrap_id107hp_touch_init(){
-  touch_on = false;
-  jshI2CInitInfo(&i2cTouch);
-  i2cTouch.bitrate = 0x7FFFFFFF; // make it as fast as we can go
-  i2cTouch.pinSDA = TOUCH_PIN_SDA;
-  i2cTouch.pinSCL = TOUCH_PIN_SCL;
-  //i2cTouch.clockStretch = false; // TODO may be change the clockStretch = true
-  
-  jshPinSetValue(i2cTouch.pinSCL, 1);
-  jshPinSetValue(i2cTouch.pinSDA, 1);
-
-  jshPinSetState(i2cTouch.pinSCL, JSHPINSTATE_GPIO_OUT_OPENDRAIN_PULLUP);
-  jshPinSetState(i2cTouch.pinSDA, JSHPINSTATE_GPIO_OUT_OPENDRAIN_PULLUP);
-  jshPinSetState(TOUCH_PIN_RDY, JSHPINSTATE_GPIO_IN);// TODO may be change the PULLUP type
-
-  jshDelayMicroseconds(10000);
-
-
-  unsigned char buf[8];
-
-  buf[0] = 0x00;
-  touch_start_wait();
-  jsi2cWrite(&i2cTouch, TOUCH_ADDR, 1, buf, false);
-  jsi2cRead(&i2cTouch, TOUCH_ADDR, 2, buf, true);
-  touch_stop_wait();
-  if (buf[0]!=0x3C)
-	{
-    touch_on = false;
-		jsExceptionHere(JSET_INTERNALERROR, "Heart sensor not found");
-	}
-
-  buf[0] = 0x01;
-  buf[1] = 0x00;
-  touch_start_wait();
-  jsi2cWrite(&i2cTouch, TOUCH_ADDR, 2, buf, true);
-  touch_stop_wait();
-
-  buf[0] = 0x0D;// Set active channels
-  buf[1] = 0x0F;
-  touch_start_wait();
-  jsi2cWrite(&i2cTouch, TOUCH_ADDR, 2, buf, true);
-  touch_stop_wait();
- 
-  buf[0] = 0x0A; // Setup touch and prox thresholds for each channel
-  buf[1] = 0x08;
-  buf[2] = 0x20;
-  buf[3] = 0x20;
-  buf[4] = 0x20;
-  buf[5] = 0x03;
-  buf[6] = 0x00;
-  buf[7] = 0x14;
-  buf[8] = 0x04;
-  touch_start_wait();
-  jsi2cWrite(&i2cTouch, TOUCH_ADDR, 9, buf, true);
-  touch_stop_wait();
-
-  buf[0] = 0x0B;// Set the ATI Targets (Target Counts)
-  buf[1] = 0x30;
-  buf[2] = 0x40;
-  touch_start_wait();
-  jsi2cWrite(&i2cTouch, TOUCH_ADDR, 3, buf, true);
-  touch_stop_wait();
-
-  buf[0] = 0x07;// Set the BASE value for each channel
-  buf[1] = 0x08;
-  buf[2] = 0x08;
-  buf[3] = 0x08;
-  buf[4] = 0x08;
-  touch_start_wait();
-  jsi2cWrite(&i2cTouch, TOUCH_ADDR, 5, buf, true);
-  touch_stop_wait();
-
-  buf[0] = 0x09;// Setup prox settings
-  buf[1] = 0x00;
-  buf[2] = 0x1D;
-  buf[3] = 0x04;
-  buf[4] = 0x00;
-  buf[5] = 0x00;
-  touch_start_wait();
-  jsi2cWrite(&i2cTouch, TOUCH_ADDR, 6, buf, true);
-  touch_stop_wait();
-
-  buf[0] = 0x08;// Setup Compensation (PCC)
-  buf[1] = 0x51;
-  buf[2] = 0x49;
-  buf[3] = 0x4A;
-  buf[4] = 0x49;
-  touch_start_wait();
-  jsi2cWrite(&i2cTouch, TOUCH_ADDR, 5, buf, true);
-  touch_stop_wait();
-
-  buf[0] = 0x0B;// Set timings on the IQS263
-  buf[1] = 0x00;
-  touch_start_wait();
-  jsi2cWrite(&i2cTouch, TOUCH_ADDR, 2, buf, true);
-  touch_stop_wait();
-
-  buf[0] = 0x0C;// Set gesture timers on IQS263
-  buf[1] = 0x05;
-  buf[2] = 0x51;
-  buf[3] = 0x33;
-  touch_start_wait();
-  jsi2cWrite(&i2cTouch, TOUCH_ADDR, 4, buf, true);
-  touch_stop_wait();
-
-  buf[0] = 0x09;// Redo ati
-  buf[1] = 0x10;
-  touch_start_wait();
-  jsi2cWrite(&i2cTouch, TOUCH_ADDR, 2, buf, true);
-  touch_stop_wait();
-
-  // Wait untill the ATI algorithm is done
-	int timeoutCount=10;
-  do
-  {
-    touch_start_wait();
-    buf[0] = 0x01;
-    jsi2cWrite(&i2cTouch, TOUCH_ADDR, 1, buf, false);
-    jsi2cRead(&i2cTouch, TOUCH_ADDR, 1, buf, true);
-    touch_stop_wait();
+void gotInterrupt1(bool state, IOEventFlags flags){ 
+  jsWarn("got it for D14"); 
+  if(state){
+     jsWarn(" ON"); 
   }
-  while ((buf[0] & 0b00000100) && (timeoutCount-- > 0) );
-
-	if (buf[0] & 0b00000100)
-	{
-    touch_on = false;
-		jsExceptionHere(JSET_INTERNALERROR, "ATI algorithm timeout");
-	}
-
-
-  buf[0] =  0x09;
-  touch_start_wait();
-  jsi2cWrite(&i2cTouch, TOUCH_ADDR, 1, buf, false);
-  jsi2cRead(&i2cTouch, TOUCH_ADDR, 2, buf, true);
-  touch_stop_wait();
-  touch_on = true;
+  else{
+    jsWarn(" OFF"); 
+  }
 }
 
 /*JSON{
 	  "type" : "staticmethod",
 	  "class" : "Id107hp",
-	  "name" : "readTouch",
-	  "generate" : "jswrap_id107hp_readTouch"
+	  "name" : "batPinIRQStart",
+	  "generate" : "jswrap_id107hp_batPinIRQStart"
 }
-Print the event on touch
+A Test methos for print message
 */
-void jswrap_id107hp_readTouch(){
-  if(!touch_on) return;
-
-  unsigned char buf[2];
-  uint8_t events;
-  buf[0] = 0x01;
-  touch_start_wait();  
-	jsi2cWrite(&i2cTouch, TOUCH_ADDR, 1, buf, false);
-  jsi2cRead(&i2cTouch, TOUCH_ADDR, 2, buf, true);
-	touch_stop_wait();
-  events = buf[1];
-  jsiConsolePrintf("EVENT %d\n",events);
-  if (events & 0x01)
-	{
-        jsiConsolePrint("proxEvent\n");
-	}
-  if (events & 0x02)
-	{
-        jsiConsolePrint("touchEvent\n");
-	}
-  if (events & 0x04)
-	{
-        jsiConsolePrint("slideEvent\n");
-	}
-  if (events & 0x10)
-	{
-        jsiConsolePrint("movementEvent\n");
-	}
-  if (events & 0x20)
-	{
-        jsiConsolePrint("tapEvent\n");
-	}
-  if (events & 0x40)
-	{
-        jsiConsolePrint("flickLeft\n");
-	}
-   if (events & 0x80)
-	{
-        jsiConsolePrint("flickRight\n");
-	}
-}
-
-
-/*
-void mag_off() {
-  //jsiConsolePrintf("mag_off\n");
-  if (isPuckV2)
-    jstStopExecuteFn(magPollHandler, 0);
-  nrf_gpio_cfg_input(MAG_PIN_SDA, NRF_GPIO_PIN_NOPULL);
-  nrf_gpio_cfg_input(MAG_PIN_SCL, NRF_GPIO_PIN_NOPULL);
-  nrf_gpio_cfg_input(MAG_PIN_INT, NRF_GPIO_PIN_NOPULL);
-  nrf_gpio_pin_clear(MAG_PIN_PWR);
-  nrf_gpio_cfg_output(MAG_PIN_PWR);
-}
-  jshPinWatch(ACCEL_PIN_INT, true);
-  */
-
-
-  ///////////////////////////////////////////////////////////
-  /*
-
-
-bool iqs263_init_setup(){
-  unsigned char data_buffer[8];
-  jsiConsolePrint("Init Setup Started\r\n");
-  data_buffer[0] = 0x00;
-  jsi2cWrite(&i2cTouch, TOUCH_ADDR, 1, data_buffer, false);
-  jsi2cRead(&i2cTouch, TOUCH_ADDR, 2, data_buffer, true);
-  if (data_buffer[0]!=0x3C){
-    touch_on = false;
-		jsWarn("Heart sensor not found");
-	}
-  // Switch the IQS263 into projection mode - if necessary
-  data_buffer[0] = 0x01;
-  data_buffer[1] = 0x00;
-  jsi2cWrite(&i2cTouch, TOUCH_ADDR, 2, data_buffer, true);
-
-  // Set active channels
-  data_buffer[0] = 0x0D;
-  data_buffer[1] = 0x07;
-  jsi2cWrite(&i2cTouch, TOUCH_ADDR, 2, data_buffer, true);
-
-  // Setup touch and prox thresholds for each channel
-	data_buffer[0] = 0x0A;
-  data_buffer[1] = 0x10;
-  data_buffer[2] = 0x20;
-  data_buffer[3] = 0x20;
-  data_buffer[4] = 0x20;
-  data_buffer[5] = 0x03;
-  data_buffer[6] = 0x00;
-  data_buffer[7] = 0x14;
-  data_buffer[8] = 0x04;
-  jsi2cWrite(&i2cTouch, TOUCH_ADDR, 9, data_buffer, true);
-  
-	// Set the ATI Targets (Target Counts)
-	data_buffer[0] = 0x0B;
-	data_buffer[1] = 0x00;
-	data_buffer[2] = 0x30;
-  data_buffer[3] = 0x40;
-  jsi2cWrite(&i2cTouch, TOUCH_ADDR, 4, data_buffer, true);
-
-	// Set the BASE value for each channel
-  data_buffer[0] = 0x07;
-  data_buffer[1] = 0x08;
-  data_buffer[2] = 0x08;
-  data_buffer[3] = 0x08;
-  data_buffer[4] = 0x08;
-	jsi2cWrite(&i2cTouch, TOUCH_ADDR, 5, data_buffer, true);
-
-	// Setup prox settings
-  data_buffer[0] = 0x09;
-  data_buffer[1] = 0x00;
-  data_buffer[2] = 0x15;
-  data_buffer[3] = 0x40;
-  data_buffer[4] = 0x00;
-  data_buffer[5] = 0xff;
-	jsi2cWrite(&i2cTouch, TOUCH_ADDR, 6, data_buffer, true);
-
-	// Setup Compensation (PCC)
-  data_buffer[0] = 0x08;
-  data_buffer[1] = 0x51;
-  data_buffer[2] = 0x49;
-  data_buffer[3] = 0x4A;
-  data_buffer[4] = 0x49;
-	jsi2cWrite(&i2cTouch, TOUCH_ADDR, 5, data_buffer, true);
-
-  // Set gesture timers on IQS263
-  data_buffer[0] = 0x0C;
-  data_buffer[1] = 0x05;
-  data_buffer[2] = 0xA0;
-  data_buffer[3] = 0x20;
-  jsi2cWrite(&i2cTouch, TOUCH_ADDR, 4, data_buffer, true);
-
-  // Redo ati
-  data_buffer[0] = 0x09;
-  data_buffer[1] = 0x10;
-  jsi2cWrite(&i2cTouch, TOUCH_ADDR, 2, data_buffer, true);
-
-	// Setup prox settings
-	data_buffer[0] = 0x09;
-	data_buffer[1] = 0x00;
-	data_buffer[2] = (0x15|0x40);
-	data_buffer[3] = (0x40|0x02);
-	data_buffer[4] = 0x00;
-  data_buffer[5] = 0xff;
-	jsi2cWrite(&i2cTouch, TOUCH_ADDR, 6, data_buffer, true);
-  touch_on = true;
-  jsiConsolePrint("Init Setup done\r\n");
-	
-  return touch_on;
-}
-bool readEvents(unsigned char *buf){
-  unsigned char data_buffer[3];
-  data_buffer[0] = 0x01;
-  touch_start_wait();
-  jsi2cWrite(&i2cTouch, TOUCH_ADDR, 1, data_buffer, false);
-  jsi2cRead(&i2cTouch, TOUCH_ADDR, 2, data_buffer, true);
-  buf[0] = data_buffer[0];
-  buf[1] = data_buffer[1];
-  if( !data_buffer[0] && !data_buffer[1]){
-			return false;
-	}
-  data_buffer[0] = 0x03;
-  touch_start_wait();
-  jsi2cWrite(&i2cTouch, TOUCH_ADDR, 1, data_buffer, false);
-  jsi2cRead(&i2cTouch, TOUCH_ADDR, 2, data_buffer, true);
-  buf[2] = data_buffer[0];
-  buf[3] = data_buffer[1];
-  //read cordinates
-  data_buffer[0] = 0x02;
-  touch_start_wait();
-  jsi2cWrite(&i2cTouch, TOUCH_ADDR, 1, data_buffer, false);
-  jsi2cRead(&i2cTouch, TOUCH_ADDR, 3, data_buffer, true);
-  buf[4] = data_buffer[0];
-  buf[5] = data_buffer[1];
-  buf[6] = data_buffer[1];
-  jsiConsolePrintf("SLIDE %d\n",buf[4]);
-	/*	We are interested in byte 0, byte 1	*/
-	/*	These bytes will give us all of the info we need	*/
-	if (data_buffer[0] & 0x80)
-		showReset = true;
-	else
-		showReset = false;
-
-	if (data_buffer[1] & 0x01){
-		events.prox = true;
-	}else
-		events.prox = false;
-
-	if (data_buffer[1] & 0x02){
-		events.touch = true;
-    //Read touch bytes
-    
-	}else
-		events.touch = false;
-
-	if (data_buffer[1] & 0x04){
-		events.slide = true;
-	}else
-		events.slide = false;
-
-	if (data_buffer[1] & 0x20)
-		events.tap = true;
-	else
-		events.tap = false;
-
-	if (data_buffer[1] & 0x40){
-		events.flickLeft = true;
-	}else
-		events.flickLeft = false;
-
-	if (data_buffer[1] & 0x80){
-		events.flickRight = true;
-	}else
-		events.flickRight = false;
-
-	return true;
-}
-void iqs263_event_mode_handshake(){
-  jsiConsolePrint("Hand Shake Started\r\n");
-  unsigned char data_buffer[2];
-  jshPinSetState(TOUCH_PIN_RDY, JSHPINSTATE_GPIO_OUT);
-  jshPinSetValue(TOUCH_PIN_RDY, 0);
-  jshDelayMicroseconds(11000);
-  jshPinSetState(TOUCH_PIN_RDY, JSHPINSTATE_GPIO_IN);
-  jshDelayMicroseconds(10000);
-	data_buffer[0] = 0x00;
-	data_buffer[1] = (0x15|0x40);
-  jsi2cWrite(&i2cTouch, TOUCH_ADDR, 2, data_buffer, true);
-  jsiConsolePrint("Hand Shake done\r\n");
-}
-void iqs263_sar_interrupt(bool state, IOEventFlags flags){
-
-  if(state) {
-    jshPushIOEvent(flags | (state?EV_EXTI_IS_HIGH:0), jshGetSystemTime());
-    return; // On HI input no work
-    //
-  }
-  unsigned char data_buffer[7];
-  if (doInitialSetup) {
-		iqs263_init_setup();
-		doInitialSetup = false;
-		return;
-	}
-  if(!readEvents(data_buffer)){
-    jshPushIOEvent(flags | (state?EV_EXTI_IS_HIGH:0), jshGetSystemTime());
-    return;
-		//
-	}
-  if (showReset) {
-		doInitialSetup = true;
-	}
-  if(events.slide){
-     
-  }
-}
-
-/*JSON{
-    "type" : "staticmethod",
-    "class" : "Id107hp",
-    "name" : "touch_init",
-    "generate" : "jswrap_id107hp_touch_init"
-}
-Init the Touch sensor
-*/
-void jswrap_id107hp_touch_init(){
-  touch_on = false;
-  jshI2CInitInfo(&i2cTouch);
-  i2cTouch.bitrate = 0x7FFFFFFF; // make it as fast as we can go
-  i2cTouch.pinSDA = TOUCH_PIN_SDA;
-  i2cTouch.pinSCL = TOUCH_PIN_SCL;
-  //i2cTouch.clockStretch = false; // TODO may be change the clockStretch = true
-  
-  jshPinSetValue(i2cTouch.pinSCL, 1);
-  jshPinSetValue(i2cTouch.pinSDA, 1);
-
-  jshPinSetState(i2cTouch.pinSCL, JSHPINSTATE_GPIO_OUT_OPENDRAIN_PULLUP);
-  jshPinSetState(i2cTouch.pinSDA, JSHPINSTATE_GPIO_OUT_OPENDRAIN_PULLUP);
-  jshPinSetState(TOUCH_PIN_RDY, JSHPINSTATE_GPIO_IN);// TODO may be change the PULLUP type
-
-  jshDelayMicroseconds(10000);
-
-  iqs263_event_mode_handshake();
-  doInitialSetup = true;
+void jswrap_id107hp_batPinIRQStart(){
   IOEventFlags exti = EV_NONE;
-  if (!jsiIsWatchingPin(TOUCH_PIN_RDY))
-    exti = jshPinWatch(TOUCH_PIN_RDY, true);
+  if (!jsiIsWatchingPin(14))
+    exti = jshPinWatch(14, true);
+    // disable event callbacks by default
   if (exti) {
-    jshSetEventCallback(exti, iqs263_sar_interrupt);
-    jsiConsolePrint("IRQ Obtained\r\n");
+    jshSetEventCallback(exti, gotInterrupt1);
   }
 }
+/*JSON{
+	  "type" : "staticmethod",
+	  "class" : "Id107hp",
+	  "name" : "batPinIRQStop",
+	  "generate" : "jswrap_id107hp_batPinIRQStop"
+}
+A Test methos for print message
+*/
+void jswrap_id107hp_batPinIRQStop(){
+   jshPinWatch(14, false);
+}
 
-  */
+void detect_iqs_comm_window(){
+  int timeout;
+  timeout = I2C_TIMEOUT*2;
+  while (nrf_gpio_pin_read(TOUCH_PIN_RDY) && --timeout);
+}
+
+void iqs_init(){
+
+}
+
+void iqs_read_event(){
+
+}

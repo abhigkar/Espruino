@@ -24,9 +24,9 @@ info = {
 # 'default_console_tx' : "D6",
  #'default_console_rx' : "D8",
  'default_console_baudrate' : "9600",
- 'variables' : 2550, # How many variables are allocated for Espruino to use. RAM will be overflowed if this number is too high and code won't compile.
+ 'variables' : 2500, # How many variables are allocated for Espruino to use. RAM will be overflowed if this number is too high and code won't compile.
  'bootloader' : 1, 
- 'binary_name' : 'espruino_%v_ID107.hex',
+ 'binary_name' : 'espruino_%v_ID107_sdk12.hex',
  'build' : {
    'optimizeflags' : '-Os',
    'libraries' : [
@@ -43,7 +43,8 @@ info = {
      'JSMODULESOURCES+=libs/js/GoodTime18x19.min.js',
      #'INCLUDE += -I$(ROOT)/libs/id107hp',
      #'WRAPPERSOURCES += libs/id107hp/jswrap_id107hp.c',
-     'DFU_SETTINGS=--sd-req 129,136 --dev-type 572 --dev-revision 0x64' ## TODO change for ID107 HR plus
+     'DFU_PRIVATE_KEY=targets/nrf5x_dfu/dfu_private_key.pem',
+     'DFU_SETTINGS=--application-version 0xff --hw-version 52 --sd-req 0x8C,0x91' ## TODO change for ID107 HR plus
    ]
  }
 };
@@ -65,7 +66,7 @@ chip = {
     'address' : 0x60000000, # put this in external flash
     'page_size' : 4096,
     'pages' : 256, # 1024kb - still loads left
-    'flash_available' : 512 - ((28 + 8 + 2)*4) # Softdevice uses 28 pages of flash, bootloader 8, FS 2. Each page is 4 kb.
+    'flash_available' : 512 - ((31 + 8 + 2)*4) # Softdevice uses 28 pages of flash, bootloader 8, FS 2. Each page is 4 kb.
   },
 };
 
