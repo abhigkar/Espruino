@@ -26,9 +26,9 @@
 #include <math.h>
 
 #ifndef BUILDNUMBER
-#define JS_VERSION "2v05"
+#define JS_VERSION "2v06"
 #else
-#define JS_VERSION "2v05." BUILDNUMBER
+#define JS_VERSION "2v06." BUILDNUMBER
 #endif
 /*
   In code:
@@ -248,9 +248,6 @@ typedef int64_t JsSysTime;
 #define JS_VARS_BEFORE_IDLE_GC 32
 #endif
 
-
-#define JSPARSE_MAX_SCOPES  8
-
 #define STRINGIFY_HELPER(x) #x
 #define STRINGIFY(x) STRINGIFY_HELPER(x)
 #define NOT_USED(x) ( (void)(x) )
@@ -403,6 +400,22 @@ typedef enum {
 
 void jsAssertFail(const char *file, int line, const char *expr);
 
+#define DBG_INFO 0
+#define DBG_VERBOSE 1
+
+/*
+#if defined(DEBUG) || __FILE__ == DEBUG_FILE
+   #define jsDebug(dbg_type, format, ...) jsiConsolePrintf("[" __FILE__ "]:" format, ## __VA_ARGS__) 
+ #else 
+   #define jsDebug(dbg_type, format, ...) do { } while(0) 
+ #endif
+ */
+#if (defined DEBUG ) ||  ( defined __FILE__ == DEBUG_FILE)
+  #define jsDebug(dbg_type, format, ...) jsiConsolePrintf("[" __FILE__ "]:" format, ## __VA_ARGS__) 
+#else 
+  #define jsDebug(dbg_type, format, ...) do { } while(0) 
+#endif
+
 #ifndef USE_FLASH_MEMORY
 // Normal functions thet place format string in ram
 void jsExceptionHere(JsExceptionType type, const char *fmt, ...);
@@ -516,5 +529,9 @@ void srand(unsigned int seed);
 
 /** get the amount of free stack we have, in bytes */
 size_t jsuGetFreeStack();
+
+#ifdef ESP32
+  void *espruino_stackHighPtr;  //Used by jsuGetFreeStack
+#endif
 
 #endif /* JSUTILS_H_ */

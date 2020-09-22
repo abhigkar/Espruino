@@ -278,8 +278,8 @@ void jsvStringIteratorClone(JsvStringIterator *dstit, JsvStringIterator *it) {
   if (dstit->var) {
     jsvLockAgain(dstit->var);
 #ifdef SPIFLASH_BASE
-    if (jsvIsFlashString(dstit->var))
-      dstit->ptr = &dstit->flashStringBuffer;
+    if (it->ptr == it->flashStringBuffer)
+      dstit->ptr = dstit->flashStringBuffer;
 #endif
   }
 }
@@ -381,11 +381,12 @@ void jsvStringIteratorAppend(JsvStringIterator *it, char ch) {
   jsvSetCharactersInVar(it->var, it->charsInVar);
 }
 
-void jsvStringIteratorAppendString(JsvStringIterator *it, JsVar *str, size_t startIdx) {
+void jsvStringIteratorAppendString(JsvStringIterator *it, JsVar *str, size_t startIdx, int maxLength) {
   JsvStringIterator sit;
   jsvStringIteratorNew(&sit, str, startIdx);
-  while (jsvStringIteratorHasChar(&sit)) {
+  while (jsvStringIteratorHasChar(&sit) && maxLength>0) {
     jsvStringIteratorAppend(it, jsvStringIteratorGetCharAndNext(&sit));
+    maxLength--;
   }
   jsvStringIteratorFree(&sit);
 }

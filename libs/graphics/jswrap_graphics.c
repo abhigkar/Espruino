@@ -605,8 +605,7 @@ JsVar *jswrap_graphics_drawRect(JsVar *parent, int x1, int y1, int x2, int y2) {
 Draw a filled circle in the Foreground Color
 */
  JsVar *jswrap_graphics_fillCircle(JsVar *parent, int x, int y, int rad) {
-   jswrap_graphics_fillEllipse(parent, x-rad, y-rad, x+rad, y+rad);
-   return jsvLockAgain(parent);
+   return jswrap_graphics_fillEllipse(parent, x-rad, y-rad, x+rad, y+rad);
  }
 
 /*JSON{
@@ -626,8 +625,7 @@ Draw a filled circle in the Foreground Color
 Draw an unfilled circle 1px wide in the Foreground Color
 */
 JsVar *jswrap_graphics_drawCircle(JsVar *parent, int x, int y, int rad) {
-  jswrap_graphics_drawEllipse(parent, x-rad, y-rad, x+rad, y+rad);
-  return jsvLockAgain(parent);
+  return jswrap_graphics_drawEllipse(parent, x-rad, y-rad, x+rad, y+rad);
 }
 
 /*JSON{
@@ -1642,7 +1640,22 @@ JsVar *jswrap_graphics_drawPoly(JsVar *parent, JsVar *poly, bool closed) {
   "return" : ["JsVar","The instance of Graphics this was called on, to allow call chaining"],
   "return_object" : "Graphics"
 }
-Draw a filled polygon in the current foreground color
+Draw a filled polygon in the current foreground color.
+
+```
+g.fillPoly([
+  16, 0,
+  31, 31,
+  26, 31,
+  16, 12,
+  6, 28,
+  0, 27 ]);
+```
+
+This fills from the top left hand side of the polygon (low X, low Y)
+*down to but not including* the bottom right. When placed together polygons
+will align perfectly without overdraw - but this will not fill the
+same pixels as `drawPoly` (drawing a line around the edge of the polygon).
 */
 JsVar *jswrap_graphics_fillPoly(JsVar *parent, JsVar *poly) {
   JsGraphics gfx; if (!graphicsGetFromVar(&gfx, parent)) return 0;
@@ -1843,7 +1856,7 @@ static bool _jswrap_graphics_parseImage(JsGraphics *gfx, JsVar *image, GfxDrawIm
 
 /// This is for rotating and scaling layers
 typedef struct {
-  int x1,y1,x2,y2;
+  int x1,y1,x2,y2; //x2/y2 is exclusive
   double rotate; // radians
   double scale; // 1 = 1:1, 2 = big
   bool center; // center on x1/y1 (which are then offset)
@@ -2019,65 +2032,30 @@ JsVar *jswrap_graphics_drawImage(JsVar *parent, JsVar *image, int xPos, int yPos
   JsvStringIterator it;
   jsvStringIteratorNew(&it, img.buffer, (size_t)img.bufferOffset);
 
+#ifdef USE_LCD_ST7789_8BIT // can we blit directly to the display?
+  bool isST7789 =
+        gfx.data.type==JSGRAPHICSTYPE_ST7789_8BIT && // it's the display
+        (gfx.data.flags & JSGRAPHICSFLAGS_MAPPEDXY)==0 && // no messing with coordinates
+        gfx.data.bpp==16 && // normal BPP
+        (img.bpp==8 || img.bpp==1) && // image bpp is handled by fast path
+        !img.isTransparent; // not transparent
+#endif
+
   if (jsvIsUndefined(options)) {
     // Standard 1:1 blitting
-#ifdef GRAPHICS_FAST_PATHS
-    bool fastPath =
-        (gfx.data.flags & (JSGRAPHICSFLAGS_SWAP_XY|JSGRAPHICSFLAGS_INVERT_X|JSGRAPHICSFLAGS_INVERT_Y))==0; // no messing with coordinates
 #ifdef USE_LCD_ST7789_8BIT // can we blit directly to the display?
-    uint8_t *pixelPtr;
-    size_t pixelLen;
-    if (fastPath &&
-        gfx.data.type==JSGRAPHICSTYPE_ST7789_8BIT &&
-        gfx.data.bpp==16 &&
-        (img.bpp==8 || img.bpp==1) &&
-        !img.isTransparent &&
-        xPos>=0 && yPos>=0 && // check it's all on-screen
-        (xPos+img.width)<=LCD_WIDTH && (yPos+img.height)<=LCD_HEIGHT) {
+    if (isST7789 &&
+        xPos>=gfx.data.clipRect.x1 && yPos>=gfx.data.clipRect.y1 && // check it's all on-screen
+        (xPos+img.width)<=gfx.data.clipRect.x2 && (yPos+img.height)<=gfx.data.clipRect.y2) {
       if (img.bpp==1) lcdST7789_blit1Bit(xPos, yPos, img.width, img.height, 1, &it, img.palettePtr);
       else if (img.bpp==8) lcdST7789_blit8Bit(xPos, yPos, img.width, img.height, 1, &it, img.palettePtr);
-    } else
-#endif
-    if (fastPath) { // fast path for standard blit
-      int yp = yPos;
-      for (y=0;y<img.height;y++) {
-        int xp = xPos;
-        for (x=0;x<img.width;x++) {
-          // Get the data we need...
-          while (bits < img.bpp) {
-            colData = (colData<<8) | ((unsigned char)jsvStringIteratorGetCharAndNext(&it));
-            bits += 8;
-          }
-          // extract just the bits we want
-          unsigned int col = (colData>>(bits-img.bpp))&img.bitMask;
-          bits -= img.bpp;
-          // Try and write pixel!
-          if (img.transparentCol!=col) {
-            if (img.palettePtr) col = img.palettePtr[col&img.paletteMask];
-            if (xp>=gfx.data.clipRect.x1 && xp<=gfx.data.clipRect.x2 &&
-                yp>=gfx.data.clipRect.y1 && yp<=gfx.data.clipRect.y2)
-              gfx.setPixel(&gfx, xp, yp, col);
-          }
-          xp++;
-        }
-        yp++;
-      }
-      // update modified area since we went direct
-      int x1=xPos, y1=yPos, x2=xPos+img.width, y2=yPos+img.height;
-      if (x1<gfx.data.clipRect.x1) x1 = gfx.data.clipRect.x1;
-      if (y1<gfx.data.clipRect.y1) y1 = gfx.data.clipRect.y1;
-      if (x2>gfx.data.clipRect.x2) x2 = gfx.data.clipRect.x2;
-      if (y2>gfx.data.clipRect.y2) y2 = gfx.data.clipRect.y2;
-      if (x1 < gfx.data.modMinX) gfx.data.modMinX=(short)x1;
-      if (x2 > gfx.data.modMaxX) gfx.data.modMaxX=(short)x2;
-      if (y1 < gfx.data.modMinY) gfx.data.modMinY=(short)y1;
-      if (y2 > gfx.data.modMaxY) gfx.data.modMaxY=(short)y2;
-    } else { // handle rotation, and default to center the image
+    } else {
 #else
-    if (true) {
+    {
 #endif
-      for (y=0;y<img.height;y++) {
-        for (x=0;x<img.width;x++) {
+      JsGraphicsSetPixelFn setPixel = graphicsGetSetPixelUnclippedFn(&gfx, xPos, yPos, xPos+img.width-1, yPos+img.height-1);
+      for (y=yPos;y<yPos+img.height;y++) {
+        for (x=xPos;x<xPos+img.width;x++) {
           // Get the data we need...
           while (bits < img.bpp) {
             colData = (colData<<8) | ((unsigned char)jsvStringIteratorGetCharAndNext(&it));
@@ -2089,7 +2067,7 @@ JsVar *jswrap_graphics_drawImage(JsVar *parent, JsVar *image, int xPos, int yPos
           // Try and write pixel!
           if (img.transparentCol!=col) {
             if (img.palettePtr) col = img.palettePtr[col&img.paletteMask];
-            graphicsSetPixel(&gfx, x+xPos, y+yPos, col);
+            setPixel(&gfx, x, y, col);
           }
         }
       }
@@ -2110,7 +2088,7 @@ JsVar *jswrap_graphics_drawImage(JsVar *parent, JsVar *image, int xPos, int yPos
     bool fastPath =
         (!centerImage) &&  // not rotating
         (scale-floor(scale))==0 && // integer scale
-        (gfx.data.flags & (JSGRAPHICSFLAGS_SWAP_XY|JSGRAPHICSFLAGS_INVERT_X|JSGRAPHICSFLAGS_INVERT_Y))==0; // no messing with coordinates
+        (gfx.data.flags & JSGRAPHICSFLAGS_MAPPEDXY)==0; // no messing with coordinates
     if (fastPath) { // fast path for non-rotated, integer scale
       int s = (int)scale;
       // Scaled blitting
@@ -2119,15 +2097,10 @@ JsVar *jswrap_graphics_drawImage(JsVar *parent, JsVar *image, int xPos, int yPos
        * coordinate setting
        */
 #ifdef USE_LCD_ST7789_8BIT // can we blit directly to the display?
-      uint8_t *pixelPtr;
-      size_t pixelLen;
-      if (gfx.data.type==JSGRAPHICSTYPE_ST7789_8BIT &&
-          gfx.data.bpp==16 &&
+      if (isST7789 &&
           s>=1 &&
-          (img.bpp==8 || img.bpp==1) &&
-          !img.isTransparent &&
-          xPos>=0 && yPos>=0 && // check it's all on-screen
-          (xPos+img.width*s)<=LCD_WIDTH && (yPos+img.height*s)<=LCD_HEIGHT) {
+          xPos>=gfx.data.clipRect.x1 && yPos>=gfx.data.clipRect.y1 && // check it's all on-screen
+          (xPos+img.width*s)<=gfx.data.clipRect.x2 && (yPos+img.height*s)<=gfx.data.clipRect.y2) {
         if (img.bpp==1) lcdST7789_blit1Bit(xPos, yPos, img.width, img.height, s, &it, img.palettePtr);
         else lcdST7789_blit8Bit(xPos, yPos, img.width, img.height, s, &it, img.palettePtr);
       } else
@@ -2172,14 +2145,7 @@ JsVar *jswrap_graphics_drawImage(JsVar *parent, JsVar *image, int xPos, int yPos
         }
         // update modified area since we went direct
         int x1=xPos, y1=yPos, x2=xPos+s*img.width, y2=yPos+s*img.height;
-        if (x1<gfx.data.clipRect.x1) x1 = gfx.data.clipRect.x1;
-        if (y1<gfx.data.clipRect.y1) y1 = gfx.data.clipRect.y1;
-        if (x2>gfx.data.clipRect.x2) x2 = gfx.data.clipRect.x2;
-        if (y2>gfx.data.clipRect.y2) y2 = gfx.data.clipRect.y2;
-        if (x1 < gfx.data.modMinX) gfx.data.modMinX=(short)x1;
-        if (x2 > gfx.data.modMaxX) gfx.data.modMaxX=(short)x2;
-        if (y1 < gfx.data.modMinY) gfx.data.modMinY=(short)y1;
-        if (y2 > gfx.data.modMaxY) gfx.data.modMaxY=(short)y2;
+        graphicsSetModifiedAndClip(&gfx,&x1,&y1,&x2,&y2);
       }
     } else { // handle rotation, and default to center the image
 #else
@@ -2195,12 +2161,17 @@ JsVar *jswrap_graphics_drawImage(JsVar *parent, JsVar *image, int xPos, int yPos
       l.center = centerImage;
       l.repeat = false;
       _jswrap_drawImageLayerInit(&l);
+      int x1=l.x1, y1=l.y1, x2=l.x2-1, y2=l.y2-1;
+      graphicsSetModifiedAndClip(&gfx, &x1, &y1, &x2, &y2);
+      _jswrap_drawImageLayerSetStart(&l, x1, y1);
+      JsGraphicsSetPixelFn setPixel = graphicsGetSetPixelFn(&gfx);
+
       // scan across image
-      for (y = l.y1; y < l.y2; y++) {
+      for (y = y1; y <= y2; y++) {
         _jswrap_drawImageLayerStartX(&l);
-        for (x = l.x1; x < l.x2 ; x++) {
+        for (x = x1; x <= x2 ; x++) {
           if (_jswrap_drawImageLayerGetPixel(&l, &colData))
-            graphicsSetPixel(&gfx, x, y, colData);
+            setPixel(&gfx, x, y, colData);
           _jswrap_drawImageLayerNextX(&l);
         }
         _jswrap_drawImageLayerNextY(&l);
@@ -2222,7 +2193,7 @@ JsVar *jswrap_graphics_drawImage(JsVar *parent, JsVar *image, int xPos, int yPos
   "type" : "method",
   "class" : "Graphics",
   "name" : "drawImages",
-  "ifndef" : "SAVE_ON_FLASH",
+  "#if" : "!defined(SAVE_ON_FLASH) && !defined(ESPRUINOBOARD)",
   "generate" : "jswrap_graphics_drawImages",
   "params" : [
     ["layers","JsVar","An array of objects {x,y,image,scale,rotate,center} (up to 3)"],
@@ -2296,7 +2267,6 @@ JsVar *jswrap_graphics_drawImages(JsVar *parent, JsVar *layersVar, JsVar *option
     jsvUnLock(layer);
   }
 
-  // TODO: figure out default bounds based on bounds of images?
   jsvConfigObject configs[] = {
       {"x", JSV_INTEGER, &x},
       {"y", JSV_INTEGER, &y},
@@ -2305,19 +2275,10 @@ JsVar *jswrap_graphics_drawImages(JsVar *parent, JsVar *layersVar, JsVar *option
   };
   if (!jsvReadConfigObject(options, configs, sizeof(configs) / sizeof(jsvConfigObject)))
     ok =  false;
-  // clipping to screen
-  if (x<0) {
-    width += x;
-    x = 0;
-  }
-  if (y<0) {
-    height += y;
-    y = 0;
-  }
-  if (x+width > graphicsGetWidth(&gfx))
-    width = graphicsGetWidth(&gfx)-x;
-  if (y+height > graphicsGetHeight(&gfx))
-    height = graphicsGetHeight(&gfx)-y;
+  int x2 = x+width-1, y2 = y+height-1;
+  graphicsSetModifiedAndClip(&gfx, &x, &y, &x2, &y2);
+  JsGraphicsSetPixelFn setPixel = graphicsGetSetPixelFn(&gfx);
+
   // If all good, start rendering!
   if (ok) {
     for (i=0;i<layerCount;i++) {
@@ -2325,10 +2286,10 @@ JsVar *jswrap_graphics_drawImages(JsVar *parent, JsVar *layersVar, JsVar *option
       _jswrap_drawImageLayerSetStart(&layers[i], x, y);
     }
     // scan across image
-    for (int yi = 0; yi < height; yi++) {
+    for (int yi = y; yi <= y2; yi++) {
       for (i=0;i<layerCount;i++)
         _jswrap_drawImageLayerStartX(&layers[i]);
-      for (int xi = 0; xi < width ; xi++) {
+      for (int xi = x; xi <= x2 ; xi++) {
         // scan backwards until we hit a 'solid' pixel
         bool solid = false;
         unsigned int colData = 0;
@@ -2340,7 +2301,7 @@ JsVar *jswrap_graphics_drawImages(JsVar *parent, JsVar *layersVar, JsVar *option
         }
         // if nontransparent, draw it!
         if (solid)
-          graphicsSetPixel(&gfx, xi+x, yi+y, colData);
+          setPixel(&gfx, xi, yi, colData);
         // next in layers!
         for (i=0;i<layerCount;i++) {
           _jswrap_drawImageLayerNextX(&layers[i]);
@@ -2418,8 +2379,8 @@ JsVar *jswrap_graphics_asImage(JsVar *parent, JsVar *imgType) {
         ((gfx.data.flags & JSGRAPHICSFLAGS_ARRAYBUFFER_MSB) && // must be MSB first
           !(gfx.data.flags & JSGRAPHICSFLAGS_NONLINEAR)))) { // must be in-order
       jsvObjectSetChildAndUnLock(img,"buffer",jsvObjectGetChild(gfx.graphicsVar, "buffer", 0));
+      return img;
     }
-    return img;
   } else {
     len += 3; // for the header!
   }
@@ -2476,7 +2437,7 @@ the modified area to 0.
 For instance if `g.setPixel(10,20)` was called, this would return `{x1:10, y1:20, x2:10, y2:20}`
 */
 JsVar *jswrap_graphics_getModified(JsVar *parent, bool reset) {
-#ifndef SAVE_ON_FLASH
+#ifndef NO_MODIFIED_AREA
   JsGraphics gfx; if (!graphicsGetFromVar(&gfx, parent)) return 0;
   JsVar *obj = 0;
   if (gfx.data.modMinX <= gfx.data.modMaxX) { // do we have a rect?
@@ -2639,7 +2600,7 @@ void jswrap_graphics_dump(JsVar *parent) {
   "type" : "method",
   "class" : "Graphics",
   "name" : "quadraticBezier",
-  "#if" : "!defined(SAVE_ON_FLASH) && !defined(ESPRUINOBOARD) && !defined(BANGLEJS)",
+  "#if" : "!defined(SAVE_ON_FLASH) && !defined(ESPRUINOBOARD)",
   "generate" : "jswrap_graphics_quadraticBezier",
   "params" : [
     ["arr","JsVar","An array of three vertices, six enties in form of ```[x0,y0,x1,y1,x2,y2]```"],
@@ -2662,43 +2623,134 @@ JsVar *jswrap_graphics_quadraticBezier( JsVar *parent, JsVar *arr, JsVar *option
 
   if (jsvGetArrayLength(arr) != 6) return result;
 
-  double s,t,t2,tp2, tpt;
   int sn = 5;
-  int dx, dy;
-  int x0, x1, x2, y0, y1, y2;
+  typedef struct { int x,y; } XY;
+  XY xy[3];
   int count = 0;
 
   JsvIterator it;
   jsvIteratorNew(&it, arr, JSIF_EVERY_ARRAY_ELEMENT);
-  x0 = jsvIteratorGetIntegerValue(&it); jsvIteratorNext(&it);
-  y0 = jsvIteratorGetIntegerValue(&it); jsvIteratorNext(&it);
-  x1 = jsvIteratorGetIntegerValue(&it); jsvIteratorNext(&it);
-  y1 = jsvIteratorGetIntegerValue(&it); jsvIteratorNext(&it);
-  x2 = jsvIteratorGetIntegerValue(&it); jsvIteratorNext(&it);
-  y2 = jsvIteratorGetIntegerValue(&it); jsvIteratorFree(&it);
+  for (int i=0;i<6;i++) {
+    ((int*)xy)[i] = jsvIteratorGetIntegerValue(&it);
+    jsvIteratorNext(&it);
+  }
+  jsvIteratorFree(&it);
+
 
   if (jsvIsObject(options)) count = jsvGetIntegerAndUnLock(jsvObjectGetChild(options,"count",0));
 
-  dx = (x0 - x2) < 0 ? (x2-x0):(x0-x2);
-  dy = (y0 - y2) < 0 ? (y2-y0):(y0-y2);
-  s =  1 / (double) (((dx < dy) ? dx : dy ) / sn );
-  if ( s >= 1)  s = 0.33;
-  if ( s < 0.1) s = 0.1;
-  if (count > 0) s = 1.0 / count;
+  const int FP_MUL = 4096;
+  const int FP_SHIFT = 12;
+  int dx = xy[0].x - xy[2].x;
+  if (dx<0) dx=-dx;
+  int dy = xy[0].y - xy[2].y;
+  if (dy<0) dy=-dy;
+  int dmin = (dx < dy) ? dx : dy;
+  if (dmin==0) dmin=1;
+  int s =  FP_MUL*sn / dmin;
+  if ( s >= FP_MUL)  s = FP_MUL/3;
+  if ( s < FP_MUL/10) s = FP_MUL/10;
+  if (count > 0) s = FP_MUL / count;
 
-  jsvArrayPushAndUnLock(result, jsvNewFromInteger(x0));
-  jsvArrayPushAndUnLock(result, jsvNewFromInteger(y0));
+  jsvArrayPush2Int(result, xy[0].x, xy[0].y);
 
-  for ( t = s; t <= 1; t += s ) {
-    t2 = t*t;
-    tp2 = (1 - t) * (1 - t);
-    tpt = 2 * (1 - t) * t;
-    jsvArrayPushAndUnLock(result, jsvNewFromInteger((int)(x0 * tp2 + x1 * tpt + x2 * t2 + 0.5)));
-    jsvArrayPushAndUnLock(result, jsvNewFromInteger((int)(y0 * tp2 + y1 * tpt + y2 * t2 + 0.5)));
+  for ( int t = s; t <= FP_MUL; t += s ) {
+    int t2 = (t*t) >> FP_SHIFT;
+    int tp2 = ((FP_MUL - t) * (FP_MUL - t)) >> FP_SHIFT;
+    int tpt = (2 * (FP_MUL - t) * t) >> FP_SHIFT;
+    jsvArrayPush2Int(result,
+        (xy[0].x * tp2 + xy[1].x * tpt + xy[2].x * t2 + (FP_MUL/2)) >> FP_SHIFT,
+        (xy[0].y * tp2 + xy[1].y * tpt + xy[2].y * t2 + (FP_MUL/2)) >> FP_SHIFT);
   }
 
-  jsvArrayPushAndUnLock(result, jsvNewFromInteger(x2));
-  jsvArrayPushAndUnLock(result, jsvNewFromInteger(y2));
+  jsvArrayPush2Int(result, xy[2].x, xy[2].y);
 
   return  result;
+}
+
+/*JSON{
+  "type" : "method",
+  "class" : "Graphics",
+  "name" : "transformVertices",
+  "#if" : "!defined(SAVE_ON_FLASH) && !defined(ESPRUINOBOARD)",
+  "generate" : "jswrap_graphics_transformVertices",
+  "params" : [
+    ["verts","JsVar","An array of vertices, of the form ```[x1,y1,x2,y2,x3,y3,etc]```"],
+    ["transformation","JsVar","The transformation to apply, either an Object or an Array (see below)"]
+  ],
+  "return" : ["JsVar", "Array of transformed vertices" ]
+}
+Transformation can be:
+
+* An object of the form
+```
+{
+  x: float, // x offset (default 0)
+  y: float, // y offset (default 0)
+  scale: float, // scale factor (default 1)
+  rotation: float, // angle in radians (default 0)
+}
+```
+* A six-element array of the form `[a,b,c,d,e,f]`, which represents the 2D transformation matrix
+```
+a c e
+b d f
+0 0 1
+```
+
+ Apply a transformation to an array of vertices.
+*/
+JsVar *jswrap_graphics_transformVertices(JsVar *parent, JsVar *verts, JsVar *transformation) {
+  NOT_USED(parent);
+  JsVar *result = jsvNewEmptyArray();
+  if (!result) return 0;
+  if (!jsvIsIterable(verts)) return result;
+
+  double m[6];
+
+  if (jsvIsObject(transformation)) {
+    double x=0, y=0, scale=1, rotate=0;
+    jsvConfigObject configs[] = {
+        {"x", JSV_FLOAT, &x},
+        {"y", JSV_FLOAT, &y},
+        {"scale", JSV_FLOAT, &scale},
+        {"rotate", JSV_FLOAT, &rotate}
+    };
+    if (!jsvReadConfigObject(transformation, configs, sizeof(configs) / sizeof(jsvConfigObject)))
+        return result;
+    double cosr = 1, sinr = 0;
+    if (rotate) {
+      cosr = cos(rotate);
+      sinr = sin(rotate);
+    }
+    m[0] = cosr*scale; m[2] = -sinr*scale; m[4] = x;
+    m[1] = sinr*scale; m[3] = cosr*scale; m[5] = y;
+  } else if (jsvIsIterable(transformation) && jsvGetLength(transformation) == 6) {
+    JsvIterator it;
+    jsvIteratorNew(&it, transformation, JSIF_EVERY_ARRAY_ELEMENT);
+    for (int i = 0; i < 6; ++i) {
+      m[i] = jsvIteratorGetFloatValue(&it);
+      jsvIteratorNext(&it);
+    }
+    jsvIteratorFree(&it);
+  } else {
+    jsExceptionHere(JSET_TYPEERROR,"Expected either an object or an array with 6 entries for second argument");
+    return 0;
+  }
+
+  JsvIterator it;
+  jsvIteratorNew(&it, verts, JSIF_EVERY_ARRAY_ELEMENT);
+  while (jsvIteratorHasElement(&it)) {
+    double x = jsvIteratorGetFloatValue(&it);
+    jsvIteratorNext(&it);
+    if (!jsvIteratorHasElement(&it)) break;
+    double y = jsvIteratorGetFloatValue(&it);
+    jsvIteratorNext(&it);
+
+    jsvArrayPushAndUnLock(result, jsvNewFromFloat(m[0]*x + m[2]*y + m[4]));
+    jsvArrayPushAndUnLock(result, jsvNewFromFloat(m[1]*x + m[3]*y + m[5]));
+  }
+  jsvIteratorFree(&it);
+
+  return result;
 }

@@ -3161,6 +3161,12 @@ JsVarInt jsvArrayPushAndUnLock(JsVar *arr, JsVar *value) {
   return l;
 }
 
+// Push 2 integers onto the end of an array
+void jsvArrayPush2Int(JsVar *arr, JsVarInt a, JsVarInt b) {
+  jsvArrayPushAndUnLock(arr, jsvNewFromInteger(a));
+  jsvArrayPushAndUnLock(arr, jsvNewFromInteger(b));
+}
+
 /// Append all values from the source array to the target array
 void jsvArrayPushAll(JsVar *target, JsVar *source, bool checkDuplicates) {
   assert(jsvIsArray(target));
@@ -3260,23 +3266,26 @@ void jsvArrayAddUnique(JsVar *arr, JsVar *v) {
 JsVar *jsvArrayJoin(JsVar *arr, JsVar *filler) {
   JsVar *str = jsvNewFromEmptyString();
   if (!str) return 0; // out of memory
+  assert(!filler || jsvIsString(filler));
 
   JsvIterator it;
   jsvIteratorNew(&it, arr, JSIF_EVERY_ARRAY_ELEMENT);
+  JsvStringIterator itdst;
+  jsvStringIteratorNew(&itdst, str, 0);
   bool first = true;
   while (!jspIsInterrupted() && jsvIteratorHasElement(&it)) {
     JsVar *key = jsvIteratorGetKey(&it);
     if (jsvIsInt(key)) {
       // add the filler
       if (filler && !first)
-        jsvAppendStringVarComplete(str, filler);
+        jsvStringIteratorAppendString(&itdst, filler, 0, JSVAPPENDSTRINGVAR_MAXLENGTH);
       first = false;
       // add the value
       JsVar *value = jsvIteratorGetValue(&it);
       if (value && !jsvIsNull(value)) {
         JsVar *valueStr = jsvAsString(value);
         if (valueStr) { // could be out of memory
-          jsvAppendStringVarComplete(str, valueStr);
+          jsvStringIteratorAppendString(&itdst, valueStr, 0, JSVAPPENDSTRINGVAR_MAXLENGTH);
           jsvUnLock(valueStr);
         }
       }
@@ -3286,6 +3295,7 @@ JsVar *jsvArrayJoin(JsVar *arr, JsVar *filler) {
     jsvIteratorNext(&it);
   }
   jsvIteratorFree(&it);
+  jsvStringIteratorFree(&itdst);
   return str;
 }
 
@@ -3428,7 +3438,7 @@ JsVar *jsvMathsOp(JsVar *a, JsVar *b, int op) {
       case '/': return jsvNewFromFloat(da/db);
       case '%': return jsvNewFromFloat(jswrap_math_mod(da, db));
       case LEX_EQUAL:
-      case LEX_NEQUAL:  { bool equal = da==db;
+      case LEX_NEQUAL:  { bool equal = da==db && jsvIsNull(a)==jsvIsNull(b);
       if ((jsvIsNull(a) && jsvIsUndefined(b)) ||
           (jsvIsNull(b) && jsvIsUndefined(a))) equal = true; // JS quirk :)
       return jsvNewFromBool((op==LEX_EQUAL) ? equal : ((bool)!equal));
@@ -4088,7 +4098,7 @@ JsVar *jsvNewTypedArray(JsVarDataArrayBufferViewType type, JsVarInt length) {
   return array;
 }
 
-#ifndef SAVE_ON_FLASH
+#ifndef NO_DATAVIEW
 JsVar *jsvNewDataViewWithData(JsVarInt length, unsigned char *data) {
   JsVar *buf = jswrap_arraybuffer_constructor(length);
   if (!buf) return 0;

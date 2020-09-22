@@ -471,7 +471,7 @@ void jsiSoftInit(bool hasBeenReset) {
   jswInit();
 
   // Search for invalid storage and remove it
-#ifndef EMSCRIPTEN
+#if !defined(EMSCRIPTEN) && !defined(SAVE_ON_FLASH)
   if (!jsfIsStorageValid()) {
     jsiConsolePrintf("Storage is corrupt.\n");
     jsiConsolePrintf("Erasing Storage Area...\n");
@@ -1299,7 +1299,7 @@ void jsiTabComplete() {
   JsLex lex;
   JsLex *oldLex = jslSetLex(&lex);
   jslInit(inputLine);
-  while (lex.tk!=LEX_EOF && jsvStringIteratorGetIndex(&lex.tokenStart.it)<=inputCursorPos) {
+  while (lex.tk!=LEX_EOF && (lex.tokenStart+1)<=inputCursorPos) {
     if (lex.tk=='.') {
       jsvUnLock(object);
       object = data.partial;
@@ -1307,7 +1307,7 @@ void jsiTabComplete() {
     } else if (lex.tk==LEX_ID) {
       jsvUnLock(data.partial);
       data.partial = jslGetTokenValueAsVar();
-      partialStart = jsvStringIteratorGetIndex(&lex.tokenStart.it);
+      partialStart = lex.tokenStart+1;
     } else {
       jsvUnLock(object);
       object = 0;
@@ -1941,20 +1941,20 @@ void jsiIdle() {
           } else { // Debouncing - use timeouts to ensure we only fire at the right time
             // store the current state of the pin
             bool oldWatchState = jsvGetBoolAndUnLock(jsvObjectGetChild(watchPtr, "state",0));
-            jsvObjectSetChildAndUnLock(watchPtr, "state", jsvNewFromBool(pinIsHigh));
-
             JsVar *timeout = jsvObjectGetChild(watchPtr, "timeout", 0);
             if (timeout) { // if we had a timeout, update the callback time
               JsSysTime timeoutTime = jsiLastIdleTime + (JsSysTime)jsvGetLongIntegerAndUnLock(jsvObjectGetChild(timeout, "time", 0));
               jsvUnLock(jsvObjectSetChild(timeout, "time", jsvNewFromLongInteger((JsSysTime)(eventTime - jsiLastIdleTime) + debounce)));
-              if (eventTime > timeoutTime) {
+              jsvObjectSetChildAndUnLock(timeout, "state", jsvNewFromBool(pinIsHigh));
+              if (eventTime > timeoutTime && pinIsHigh!=oldWatchState) {
                 // timeout should have fired, but we didn't get around to executing it!
                 // Do it now (with the old timeout time)
                 executeNow = true;
                 eventTime = timeoutTime - debounce;
-                pinIsHigh = oldWatchState;
+                jsvObjectSetChildAndUnLock(watchPtr, "state", jsvNewFromBool(pinIsHigh));
+                // TODO: remove timer?
               }
-            } else { // else create a new timeout
+            } else if (pinIsHigh!=oldWatchState) { // else create a new timeout
               timeout = jsvNewObject();
               if (timeout) {
                 jsvObjectSetChild(timeout, "watch", watchPtr); // no unlock
@@ -1962,6 +1962,7 @@ void jsiIdle() {
                 jsvObjectSetChildAndUnLock(timeout, "callback", jsvObjectGetChild(watchPtr, "callback", 0));
                 jsvObjectSetChildAndUnLock(timeout, "lastTime", jsvObjectGetChild(watchPtr, "lastTime", 0));
                 jsvObjectSetChildAndUnLock(timeout, "pin", jsvNewFromPin(pin));
+                jsvObjectSetChildAndUnLock(timeout, "state", jsvNewFromBool(pinIsHigh));
                 // Add to timer array
                 jsiTimerAdd(timeout);
                 // Add to our watch
@@ -1979,11 +1980,11 @@ void jsiIdle() {
               bool watchRecurring = jsvGetBoolAndUnLock(jsvObjectGetChild(watchPtr,  "recur", 0));
               JsVar *data = jsvNewObject();
               if (data) {
+                jsvObjectSetChildAndUnLock(data, "state", jsvNewFromBool(pinIsHigh));
                 jsvObjectSetChildAndUnLock(data, "lastTime", jsvObjectGetChild(watchPtr, "lastTime", 0));
                 // set both data.time, and watch.lastTime in one go
                 jsvObjectSetChild(data, "time", timePtr); // no unlock
                 jsvObjectSetChildAndUnLock(data, "pin", jsvNewFromPin(pin));
-                jsvObjectSetChildAndUnLock(data, "state", jsvNewFromBool(pinIsHigh));
                 Pin dataPin = jshGetEventDataPin(eventType);
                 if (jshIsPinValid(dataPin))
                   jsvObjectSetChildAndUnLock(data, "data", jsvNewFromBool((event.flags&EV_EXTI_DATA_PIN_HIGH)!=0));
@@ -2032,107 +2033,125 @@ void jsiIdle() {
   if (oldTimeSinceCtrlC > jsiTimeSinceCtrlC)
     jsiTimeSinceCtrlC = 0xFFFFFFFF;
 
-  jsiStatus = jsiStatus & ~JSIS_TIMERS_CHANGED;
   JsVar *timerArrayPtr = jsvLock(timerArray);
   JsvObjectIterator it;
+  // Go through all intervals and decrement time
   jsvObjectIteratorNew(&it, timerArrayPtr);
-  while (jsvObjectIteratorHasValue(&it) && !(jsiStatus & JSIS_TIMERS_CHANGED)) {
+  while (jsvObjectIteratorHasValue(&it)) {
     bool hasDeletedTimer = false;
     JsVar *timerPtr = jsvObjectIteratorGetValue(&it);
     JsSysTime timerTime = (JsSysTime)jsvGetLongIntegerAndUnLock(jsvObjectGetChild(timerPtr, "time", 0));
     JsSysTime timeUntilNext = timerTime - timePassed;
-
-    if (timeUntilNext<=0) {
-      // we're now doing work
-      jsiSetBusy(BUSY_INTERACTIVE, true);
-      wasBusy = true;
-      JsVar *timerCallback = jsvObjectGetChild(timerPtr, "callback", 0);
-      JsVar *watchPtr = jsvObjectGetChild(timerPtr, "watch", 0); // for debounce - may be undefined
-      bool exec = true;
-      JsVar *data = 0;
-      if (watchPtr) {
-        data = jsvNewObject();
-        // if we were from a watch then we were delayed by the debounce time...
-        if (data) {
-          JsVarInt delay = jsvGetIntegerAndUnLock(jsvObjectGetChild(watchPtr, "debounce", 0));
-          // Create the 'time' variable that will be passed to the user
-          JsVar *timePtr = jsvNewFromFloat(jshGetMillisecondsFromTime(jsiLastIdleTime+timeUntilNext-delay)/1000);
-          // if it was a watch, set the last state up
-          bool state = jsvGetBoolAndUnLock(jsvObjectSetChild(data, "state", jsvObjectGetChild(watchPtr, "state", 0)));
-          exec = jsiShouldExecuteWatch(watchPtr, state);
-          // set up the lastTime variable of data to what was in the watch
-          jsvObjectSetChildAndUnLock(data, "lastTime", jsvObjectGetChild(watchPtr, "lastTime", 0));
-          // set up the watches lastTime to this one
-          jsvObjectSetChild(watchPtr, "lastTime", timePtr); // don't unlock
-          jsvObjectSetChildAndUnLock(data, "time", timePtr);
-        }
-      }
-      bool removeTimer = false;
-      if (exec) {
-        bool execResult;
-        if (data) {
-          execResult = jsiExecuteEventCallback(0, timerCallback, 1, &data);
-        } else {
-          JsVar *argsArray = jsvObjectGetChild(timerPtr, "args", 0);
-          execResult = jsiExecuteEventCallbackArgsArray(0, timerCallback, argsArray);
-          jsvUnLock(argsArray);
-        }
-        if (!execResult) {
-          JsVar *interval = jsvObjectGetChild(timerPtr, "interval", 0);
-          if (interval) { // if interval then it's setInterval not setTimeout
-            jsvUnLock(interval);
-            jsError("Ctrl-C while processing interval - removing it.");
-            jsErrorFlags |= JSERR_CALLBACK;
-            removeTimer = true;
-          }
-        }
-      }
-      jsvUnLock(data);
-      if (watchPtr) { // if we had a watch pointer, be sure to remove us from it
-        jsvObjectRemoveChild(watchPtr, "timeout");
-        // Deal with non-recurring watches
-        if (exec) {
-          bool watchRecurring = jsvGetBoolAndUnLock(jsvObjectGetChild(watchPtr,  "recur", 0));
-          if (!watchRecurring) {
-            JsVar *watchArrayPtr = jsvLock(watchArray);
-            JsVar *watchNamePtr = jsvGetIndexOf(watchArrayPtr, watchPtr, true);
-            if (watchNamePtr) {
-              jsvRemoveChild(watchArrayPtr, watchNamePtr);
-              jsvUnLock(watchNamePtr);
-            }
-            jsvUnLock(watchArrayPtr);
-            Pin pin = jshGetPinFromVarAndUnLock(jsvObjectGetChild(watchPtr, "pin", 0));
-            if (!jsiIsWatchingPin(pin))
-              jshPinWatch(pin, false);
-          }
-        }
-        jsvUnLock(watchPtr);
-      }
-      // Load interval *after* executing code, in case it has changed
-      JsVar *interval = jsvObjectGetChild(timerPtr, "interval", 0);
-      if (!removeTimer && interval) {
-        timeUntilNext = timeUntilNext + jsvGetLongInteger(interval);
-      } else {
-        // free
-        // Beware... may have already been removed!
-        jsvObjectIteratorRemoveAndGotoNext(&it, timerArrayPtr);
-        hasDeletedTimer = true;
-        timeUntilNext = -1;
-      }
-      jsvUnLock2(timerCallback,interval);
-
-    }
-    // update the time until the next timer
-    if (timeUntilNext>=0 && timeUntilNext < minTimeUntilNext)
-      minTimeUntilNext = timeUntilNext;
-    // update the timer's time
-    if (!hasDeletedTimer) {
-      jsvObjectSetChildAndUnLock(timerPtr, "time", jsvNewFromLongInteger(timeUntilNext));
-      jsvObjectIteratorNext(&it);
-    }
+    jsvObjectSetChildAndUnLock(timerPtr, "time", jsvNewFromLongInteger(timeUntilNext));
     jsvUnLock(timerPtr);
+    jsvObjectIteratorNext(&it);
   }
   jsvObjectIteratorFree(&it);
+  // Now go through intervals and execute if needed
+  do {
+    jsiStatus = jsiStatus & ~JSIS_TIMERS_CHANGED;
+    jsvObjectIteratorNew(&it, timerArrayPtr);
+    while (jsvObjectIteratorHasValue(&it) && !(jsiStatus & JSIS_TIMERS_CHANGED)) {
+      bool hasDeletedTimer = false;
+      JsVar *timerPtr = jsvObjectIteratorGetValue(&it);
+      JsSysTime timerTime = (JsSysTime)jsvGetLongIntegerAndUnLock(jsvObjectGetChild(timerPtr, "time", 0));
+      if (timerTime<=0) {
+        // we're now doing work
+        jsiSetBusy(BUSY_INTERACTIVE, true);
+        wasBusy = true;
+        JsVar *timerCallback = jsvObjectGetChild(timerPtr, "callback", 0);
+        JsVar *watchPtr = jsvObjectGetChild(timerPtr, "watch", 0); // for debounce - may be undefined
+        bool exec = true;
+        JsVar *data = 0;
+        if (watchPtr) {
+          bool watchState = jsvGetBoolAndUnLock(jsvObjectGetChild(watchPtr, "state", 0));
+          bool timerState = jsvGetBoolAndUnLock(jsvObjectGetChild(timerPtr, "state", 0));
+          jsvObjectSetChildAndUnLock(watchPtr, "state", jsvNewFromBool(timerState));
+          exec = false;
+          if (watchState!=timerState && jsiShouldExecuteWatch(watchPtr, timerState)) {
+            data = jsvNewObject();
+            // if we were from a watch then we were delayed by the debounce time...
+            if (data) {
+              exec = true;
+              JsVarInt delay = jsvGetIntegerAndUnLock(jsvObjectGetChild(watchPtr, "debounce", 0));
+              // Create the 'time' variable that will be passed to the user
+              JsVar *timePtr = jsvNewFromFloat(jshGetMillisecondsFromTime(jsiLastIdleTime+timerTime-delay)/1000);
+              // if it was a watch, set the last state up
+              jsvObjectSetChildAndUnLock(data, "state", jsvNewFromBool(timerState));
+              // set up the lastTime variable of data to what was in the watch
+              jsvObjectSetChildAndUnLock(data, "lastTime", jsvObjectGetChild(watchPtr, "lastTime", 0));
+              // set up the watches lastTime to this one
+              jsvObjectSetChild(watchPtr, "lastTime", timePtr); // don't unlock
+              jsvObjectSetChildAndUnLock(data, "time", timePtr);
+              jsvObjectSetChildAndUnLock(data, "pin", jsvObjectGetChild(watchPtr, "pin", 0));
+            }
+          }
+        }
+        bool removeTimer = false;
+        if (exec) {
+          bool execResult;
+          if (data) {
+            execResult = jsiExecuteEventCallback(0, timerCallback, 1, &data);
+          } else {
+            JsVar *argsArray = jsvObjectGetChild(timerPtr, "args", 0);
+            execResult = jsiExecuteEventCallbackArgsArray(0, timerCallback, argsArray);
+            jsvUnLock(argsArray);
+          }
+          if (!execResult) {
+            JsVar *interval = jsvObjectGetChild(timerPtr, "interval", 0);
+            if (interval) { // if interval then it's setInterval not setTimeout
+              jsvUnLock(interval);
+              jsError("Ctrl-C while processing interval - removing it.");
+              jsErrorFlags |= JSERR_CALLBACK;
+              removeTimer = true;
+            }
+          }
+        }
+        jsvUnLock(data);
+        if (watchPtr) { // if we had a watch pointer, be sure to remove us from it
+          jsvObjectRemoveChild(watchPtr, "timeout");
+          // Deal with non-recurring watches
+          if (exec) {
+            bool watchRecurring = jsvGetBoolAndUnLock(jsvObjectGetChild(watchPtr,  "recur", 0));
+            if (!watchRecurring) {
+              JsVar *watchArrayPtr = jsvLock(watchArray);
+              JsVar *watchNamePtr = jsvGetIndexOf(watchArrayPtr, watchPtr, true);
+              if (watchNamePtr) {
+                jsvRemoveChild(watchArrayPtr, watchNamePtr);
+                jsvUnLock(watchNamePtr);
+              }
+              jsvUnLock(watchArrayPtr);
+              Pin pin = jshGetPinFromVarAndUnLock(jsvObjectGetChild(watchPtr, "pin", 0));
+              if (!jsiIsWatchingPin(pin))
+                jshPinWatch(pin, false);
+            }
+          }
+          jsvUnLock(watchPtr);
+        }
+        // Load interval *after* executing code, in case it has changed
+        JsVar *interval = jsvObjectGetChild(timerPtr, "interval", 0);
+        if (!removeTimer && interval) {
+          timerTime = timerTime + jsvGetLongInteger(interval);
+          jsvObjectSetChildAndUnLock(timerPtr, "time", jsvNewFromLongInteger(timerTime));
+        } else {
+          // free
+          // Beware... may have already been removed!
+          jsvObjectIteratorRemoveAndGotoNext(&it, timerArrayPtr);
+          hasDeletedTimer = true;
+          timerTime = -1;
+        }
+        jsvUnLock2(timerCallback,interval);
+      }
+      // update the time until the next timer
+      if (timerTime>=0 && timerTime < minTimeUntilNext)
+        minTimeUntilNext = timerTime;
+      // update the timer's time
+      if (!hasDeletedTimer)
+        jsvObjectIteratorNext(&it);
+      jsvUnLock(timerPtr);
+    }
+    jsvObjectIteratorFree(&it);
+  } while (jsiStatus & JSIS_TIMERS_CHANGED);
   jsvUnLock(timerArrayPtr);
   /* We might have left the timers loop with stuff to do because the contents of it
    * changed. It's not a big deal because it could only have changed because a timer

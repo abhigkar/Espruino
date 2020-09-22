@@ -143,6 +143,7 @@ bool matchcharacter(char *regexp, JsvStringIterator *txtIt, int *length, matchIn
     if (cH=='d') return isNumeric(ch);
     if (cH=='D') return !isNumeric(ch);
     if (cH=='f') { cH=0x0C; goto haveCode; }
+    if (cH=='b') { cH=0x08; goto haveCode; }
     if (cH=='n') { cH=0x0A; goto haveCode; }
     if (cH=='r') { cH=0x0D; goto haveCode; }
     if (cH=='s') return isWhitespace(ch);
@@ -338,7 +339,7 @@ JsVar *jswrap_regexp_exec(JsVar *parent, JsVar *arg) {
   JsVar *str = jsvAsString(arg);
   JsVarInt lastIndex = jsvGetIntegerAndUnLock(jsvObjectGetChild(parent, "lastIndex", 0));
   JsVar *regex = jsvObjectGetChild(parent, "source", 0);
-  if (!jsvIsString(regex)) {
+  if (!jsvIsString(regex) || lastIndex>jsvGetStringLength(str)) {
     jsvUnLock2(str,regex);
     return 0;
   }

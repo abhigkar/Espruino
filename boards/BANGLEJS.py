@@ -41,6 +41,7 @@ info = {
      'DEFINES+=-DDUMP_IGNORE_VARIABLES=\'"g\\0"\'',
      'DEFINES+=-DUSE_FONT_6X8 -DGRAPHICS_PALETTED_IMAGES',
      'DEFINES+=-DNO_DUMP_HARDWARE_INITIALISATION', # don't dump hardware init - not used and saves 1k of flash
+     'DEFINES+=-DAPP_TIMER_OP_QUEUE_SIZE=5', # Bangle.js accelerometer poll handler needs something else in queue size
      'DFU_PRIVATE_KEY=targets/nrf5x_dfu/dfu_private_key.pem',
      'DFU_SETTINGS=--application-version 0xff --hw-version 52 --sd-req 0x8C',
      'INCLUDE += -I$(ROOT)/libs/banglejs -I$(ROOT)/libs/misc',
@@ -89,7 +90,7 @@ devices = {
             'controller' : 'st7789_8bit', # 8 bit parallel mode
             'pin_dc' : 'D8',
             'pin_cs' : 'D10',
-#            'pin_rst' : '', # IO expander P7
+#            'pin_rst' : '', # IO expander P6
             'pin_sck' : 'D9',
             'pin_d0' : 'D0',
             'pin_d1' : 'D1',
@@ -99,7 +100,7 @@ devices = {
             'pin_d5' : 'D5',
             'pin_d6' : 'D6',
             'pin_d7' : 'D7',
-#            'pin_bl' : '', # IO expander P6
+#            'pin_bl' : '', # IO expander P5
           },
   'GPS' : {
             'device' : 'M8130-KT',
@@ -112,7 +113,7 @@ devices = {
             'pin_voltage' : 'D30'
           },
   'HEARTRATE' : {
-           # 'pin_led' : '', on IO expander
+           # 'pin_led' : '', IO expander P7
             'pin_analog' : 'D29'
           },
   'ACCEL' : {

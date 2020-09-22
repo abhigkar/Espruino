@@ -34,6 +34,9 @@
 #ifdef USE_LCD_ST7789_8BIT
 #include "lcd_st7789_8bit.h"
 #endif
+#ifdef USE_LCD_SPI_UNBUF
+#include "lcd_spi_unbuf.h"
+#endif
 
 // ----------------------------------------------------------------------------------------------
 
@@ -85,7 +88,7 @@ void graphicsFallbackScroll(JsGraphics *gfx, int xdir, int ydir) {
     for (y=gfx->data.height-ydir-1;y>=0;y--)
       graphicsFallbackScrollX(gfx, xdir, y, y+ydir);
   }
-#ifndef SAVE_ON_FLASH
+#ifndef NO_MODIFIED_AREA
   gfx->data.modMinX=0;
   gfx->data.modMinY=0;
   gfx->data.modMaxX=(short)(gfx->data.width-1);
@@ -103,6 +106,8 @@ void graphicsStructResetState(JsGraphics *gfx) {
   gfx->data.fontAlignX = 3;
   gfx->data.fontAlignY = 3;
   gfx->data.fontRotate = 0;
+#endif
+#ifndef NO_MODIFIED_AREA
   gfx->data.clipRect.x1 = 0;
   gfx->data.clipRect.y1 = 0;
   gfx->data.clipRect.x2 = (unsigned short)(gfx->data.width-1);
@@ -119,7 +124,7 @@ void graphicsStructInit(JsGraphics *gfx, int width, int height, int bpp) {
   gfx->data.height = (unsigned short)height;
   gfx->data.bpp = (unsigned char)bpp;
   graphicsStructResetState(gfx);
-#ifndef SAVE_ON_FLASH
+#ifndef NO_MODIFIED_AREA
   gfx->data.modMaxX = -32768;
   gfx->data.modMaxY = -32768;
   gfx->data.modMinX = 32767;
@@ -162,6 +167,10 @@ bool graphicsGetFromVar(JsGraphics *gfx, JsVar *parent) {
 #ifdef USE_LCD_ST7789_8BIT
     } else if (gfx->data.type == JSGRAPHICSTYPE_ST7789_8BIT) {
       lcdST7789_setCallbacks(gfx);
+#endif
+#ifdef USE_LCD_SPI_UNBUF
+    } else if (gfx->data.type == JSGRAPHICSTYPE_LCD_SPI_UNBUF) {
+      lcd_spi_unbuf_setCallbacks(gfx);
 #endif
     } else {
       jsExceptionHere(JSET_INTERNALERROR, "Unknown graphics type\n");
@@ -222,22 +231,58 @@ unsigned short graphicsGetHeight(const JsGraphics *gfx) {
   return (gfx->data.flags & JSGRAPHICSFLAGS_SWAP_XY) ? gfx->data.width : gfx->data.height;
 }
 
+// Set the area modified by a draw command and also clip to the screen/clipping bounds
+bool graphicsSetModifiedAndClip(JsGraphics *gfx, int *x1, int *y1, int *x2, int *y2) {
+  bool modified = false;
+#ifndef NO_MODIFIED_AREA
+  if (*x1<gfx->data.clipRect.x1) { *x1 = gfx->data.clipRect.x1; modified = true; }
+  if (*y1<gfx->data.clipRect.y1) { *y1 = gfx->data.clipRect.y1; modified = true; }
+  if (*x2>gfx->data.clipRect.x2) { *x2 = gfx->data.clipRect.x2; modified = true; }
+  if (*y2>gfx->data.clipRect.y2) { *y2 = gfx->data.clipRect.y2; modified = true; }
+  if (*x1 < gfx->data.modMinX) { gfx->data.modMinX=(short)*x1; modified = true; }
+  if (*x2 > gfx->data.modMaxX) { gfx->data.modMaxX=(short)*x2; modified = true; }
+  if (*y1 < gfx->data.modMinY) { gfx->data.modMinY=(short)*y1; modified = true; }
+  if (*y2 > gfx->data.modMaxY) { gfx->data.modMaxY=(short)*y2; modified = true; }
+#else
+  if (*x1<0) { *x1 = 0; modified = true; }
+  if (*y1<0) { *y1 = 0; modified = true; }
+  if (*x2>=gfx->data.width) { *x2 = gfx->data.width-1; modified = true; }
+  if (*y2>=gfx->data.height) { *y2 = gfx->data.height-1; modified = true; }
+#endif
+  return modified;
+}
+
+/// Get a setPixel function (assuming coordinates already clipped with graphicsSetModifiedAndClip) - if all is ok it can choose a faster draw function
+JsGraphicsSetPixelFn graphicsGetSetPixelFn(JsGraphics *gfx) {
+  if (gfx->data.flags & JSGRAPHICSFLAGS_MAPPEDXY)
+    return graphicsSetPixel; // fallback
+  else
+    return gfx->setPixel; // fast
+}
+
+/// Get a setPixel function (assuming no clipping by caller) - if all is ok it can choose a faster draw function
+JsGraphicsSetPixelFn graphicsGetSetPixelUnclippedFn(JsGraphics *gfx, int x1, int y1, int x2, int y2) {
+  if ((gfx->data.flags & JSGRAPHICSFLAGS_MAPPEDXY) ||
+      graphicsSetModifiedAndClip(gfx,&x1,&y1,&x2,&y2))
+    return graphicsSetPixel; // fallback
+  else
+    return gfx->setPixel; // fast
+}
+
 // ----------------------------------------------------------------------------------------------
 
 static void graphicsSetPixelDevice(JsGraphics *gfx, int x, int y, unsigned int col) {
-#ifdef SAVE_ON_FLASH
-  if (x<0 || y<0 || x>=gfx->data.width || y>=gfx->data.height) return;
-#else
+#ifndef NO_MODIFIED_AREA
   if (x<gfx->data.clipRect.x1 ||
       y<gfx->data.clipRect.y1 ||
       x>gfx->data.clipRect.x2 ||
       y>gfx->data.clipRect.y2) return;
-#endif
-#ifndef SAVE_ON_FLASH
   if (x < gfx->data.modMinX) gfx->data.modMinX=(short)x;
   if (x > gfx->data.modMaxX) gfx->data.modMaxX=(short)x;
   if (y < gfx->data.modMinY) gfx->data.modMinY=(short)y;
   if (y > gfx->data.modMaxY) gfx->data.modMaxY=(short)y;
+#else
+  if (x<0 || y<0 || x>=gfx->data.width || y>=gfx->data.height) return;
 #endif
   gfx->setPixel(gfx,(int)x,(int)y,col & (unsigned int)((1L<<gfx->data.bpp)-1));
 }
@@ -270,7 +315,7 @@ static void graphicsFillRectDevice(JsGraphics *gfx, int x1, int y1, int x2, int 
   if (y2>gfx->data.clipRect.y2) y2 = gfx->data.clipRect.y2;
 #endif
   if (x2<x1 || y2<y1) return; // nope
-#ifndef SAVE_ON_FLASH
+#ifndef NO_MODIFIED_AREA
   if (x1 < gfx->data.modMinX) gfx->data.modMinX=(short)x1;
   if (x2 > gfx->data.modMaxX) gfx->data.modMaxX=(short)x2;
   if (y1 < gfx->data.modMinY) gfx->data.modMinY=(short)y1;
@@ -460,8 +505,7 @@ void graphicsFillPoly(JsGraphics *gfx, int points, short *vertices) {
     // work out all the times lines cross the scanline
     j = points-1;
     for (i=0;i<points;i++) {
-      if ((v[i].y<=y && v[j].y>=y) ||
-          (v[j].y<=y && v[i].y>=y)) {
+      if ((v[i].y<=y && v[j].y>y) || (v[j].y<=y && v[i].y>y)) {
         if (crosscnt < MAX_CROSSES) {
           int l = v[j].y - v[i].y;
           if (l) { // don't do horiz lines - rely on the ends of the lines that join onto them
@@ -492,8 +536,11 @@ void graphicsFillPoly(JsGraphics *gfx, int points, short *vertices) {
     for (i=0;i<crosscnt;i++) {
       if (s==0) x=cross[i];
       if (slopes[i]) s++; else s--;
-      if (!s || i==crosscnt-1)
-        graphicsFillRectDevice(gfx,x>>4,y>>4,cross[i]>>4,y>>4,gfx->data.fgColor);
+      if (!s || i==crosscnt-1) {
+        int x1 = (x+15)>>4;
+        int x2 = (cross[i]+15)>>4;
+        if (x2>x1) graphicsFillRectDevice(gfx,x1,y>>4,x2-1,y>>4,gfx->data.fgColor);
+      }
       if (jspIsInterrupted()) break;
     }
   }

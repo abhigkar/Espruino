@@ -366,7 +366,7 @@ Called with discovered characteristics when discovery is finished
   "type" : "event",
   "class" : "NRF",
   "name" : "NFCon",
-  "ifdef" : "NRF52"
+  "#if" : "defined(NRF52) && defined(USE_NFC)"
 }
 Called when an NFC field is detected
  */
@@ -374,7 +374,7 @@ Called when an NFC field is detected
   "type" : "event",
   "class" : "NRF",
   "name" : "NFCoff",
-  "ifdef" : "NRF52"
+  "#if" : "defined(NRF52) && defined(USE_NFC)"
 }
 Called when an NFC field is no longer detected
  */
@@ -385,7 +385,7 @@ Called when an NFC field is no longer detected
   "params" : [
     ["arr","JsVar","An ArrayBuffer containign the received data"]
   ],
-  "ifdef" : "NRF52"
+  "#if" : "defined(NRF52) && defined(USE_NFC)"
 }
 When NFC is started with `NRF.nfcStart`, this is fired
 when NFC data is received. It doesn't get called if
@@ -2010,7 +2010,7 @@ void jswrap_ble_setLowPowerConnection(bool lowPower) {
     "type" : "staticmethod",
     "class" : "NRF",
     "name" : "nfcURL",
-    "ifdef" : "NRF52",
+    "#if" : "defined(NRF52) && defined(USE_NFC)",
     "generate" : "jswrap_nfc_URL",
     "params" : [
       ["url","JsVar","The URL string to expose on NFC, or `undefined` to disable NFC"]
@@ -2088,7 +2088,7 @@ void jswrap_nfc_URL(JsVar *url) {
     "type" : "staticmethod",
     "class" : "NRF",
     "name" : "nfcPair",
-    "ifdef" : "NRF52",
+    "#if" : "defined(NRF52) && defined(USE_NFC)",
     "generate" : "jswrap_nfc_pair",
     "params" : [
       ["key","JsVar","16 byte out of band key"]
@@ -2149,7 +2149,7 @@ void jswrap_nfc_pair(JsVar *key) {
     "type" : "staticmethod",
     "class" : "NRF",
     "name" : "nfcAndroidApp",
-    "ifdef" : "NRF52",
+    "#if" : "defined(NRF52) && defined(USE_NFC)",
     "generate" : "jswrap_nfc_androidApp",
     "params" : [
       ["app","JsVar","The unique identifier of the given Android App"]
@@ -2208,7 +2208,7 @@ void jswrap_nfc_androidApp(JsVar *appName) {
     "type" : "staticmethod",
     "class" : "NRF",
     "name" : "nfcRaw",
-    "ifdef" : "NRF52",
+    "#if" : "defined(NRF52) && defined(USE_NFC)",
     "generate" : "jswrap_nfc_raw",
     "params" : [
       ["payload","JsVar","The NFC NDEF message to deliver to the reader"]
@@ -2270,7 +2270,7 @@ void jswrap_nfc_raw(JsVar *payload) {
     "type" : "staticmethod",
     "class" : "NRF",
     "name" : "nfcStart",
-    "ifdef" : "NRF52",
+    "#if" : "defined(NRF52) && defined(USE_NFC)",
     "generate" : "jswrap_nfc_start",
     "params" : [
       ["payload","JsVar","Optional 7 byte UID"]
@@ -2339,7 +2339,7 @@ JsVar *jswrap_nfc_start(JsVar *payload) {
     "type" : "staticmethod",
     "class" : "NRF",
     "name" : "nfcStop",
-    "ifdef" : "NRF52",
+    "#if" : "defined(NRF52) && defined(USE_NFC)",
     "generate" : "jswrap_nfc_stop",
     "params" : [ ]
 }
@@ -2363,7 +2363,7 @@ void jswrap_nfc_stop() {
     "type" : "staticmethod",
     "class" : "NRF",
     "name" : "nfcSend",
-    "ifdef" : "NRF52",
+    "#if" : "defined(NRF52) && defined(USE_NFC)",
     "generate" : "jswrap_nfc_send",
     "params" : [
       ["payload","JsVar","Optional tx data"]
@@ -3098,7 +3098,12 @@ JsVar *jswrap_BluetoothRemoteGATTServer_disconnect(JsVar *parent) {
   } else {
     // no connection - try and cancel the connect attempt (assume we have one)
 #ifdef NRF52
-    err_code = sd_ble_gap_connect_cancel();
+    if (bleInTask(BLETASK_CONNECT)) {
+      bleCompleteTaskFailAndUnLock(BLETASK_CONNECT, jsvNewFromString("Connection cancelled"));
+      err_code = sd_ble_gap_connect_cancel();
+    } else {
+      jsExceptionHere(JSET_ERROR, "Not connected");
+    }
 #endif
 #ifdef ESP32
     jsWarn("connect cancel not implemented yet\n");
@@ -3535,14 +3540,14 @@ JsVar *jswrap_ble_BluetoothRemoteGATTCharacteristic_startNotifications(JsVar *ch
   JsVar *promise;
   
   // Check for existing cccd_handle 
-  uint16_t cccd = (uint16_t)jsvGetIntegerAndUnLock(jsvObjectGetChild(characteristic,"handle_cccd", 0));
-  if ( !cccd ) {
+  JsVar *cccdVar = jsvObjectGetChild(characteristic,"handle_cccd", 0);
+  if ( !cccdVar ) { // if it doesn't exist, try and find it
     if (!bleNewTask(BLETASK_CHARACTERISTIC_DESC_AND_STARTNOTIFY, characteristic))
       return 0;
     promise = jsvLockAgainSafe(blePromise);
     jsble_central_characteristicDescDiscover(characteristic);
-  }
-  else {
+  } else {
+    jsvUnLock(cccdVar);
     if (!bleNewTask(BLETASK_CHARACTERISTIC_NOTIFY, 0))
       return 0;
     promise = jsvLockAgainSafe(blePromise);    

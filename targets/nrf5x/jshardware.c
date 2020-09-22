@@ -248,10 +248,14 @@ static void usbd_user_ev_handler(app_usbd_event_type_t event)
 BITFIELD_DECL(jshPinSoftPWM, JSH_PIN_COUNT);
 // Whether a pin is negated of not (based on NRF pins)
 BITFIELD_DECL(jshNRFPinNegated, JSH_PIN_COUNT);
+
+#define PWM_COUNTERS 3
 // Current values used in PWM channel counters
-static uint16_t pwmValues[3][4];
+static uint16_t pwmValues[PWM_COUNTERS][4];
 // Current values used in main PWM counters
-static uint16_t pwmCounters[3];
+static uint16_t pwmCounters[PWM_COUNTERS];
+// Current prescalers used in main PWM counters
+static uint8_t pwmClocks[PWM_COUNTERS];
 
 /// For flash - whether it is busy or not...
 volatile bool flashIsBusy = false;
@@ -353,19 +357,24 @@ static jshUARTState uart[USART_COUNT];
 void jshUSARTUnSetup(IOEventFlags device);
 
 #ifdef SPIFLASH_BASE
-static void spiFlashReadWrite(unsigned char *tx, unsigned char *rx, unsigned int len) {
+/* 0 means CS is not enabled. If nonzero CS is enabled
+and we're in the middle of reading We'd never be at 0
+anyway because we're always expecting to have read something.  */
+uint32_t spiFlashLastAddress = 0;
+/// Read data while sending 0
+static void spiFlashRead(unsigned char *rx, unsigned int len) {
+  nrf_gpio_pin_clear((uint32_t)pinInfo[SPIFLASH_PIN_MOSI].pin);
   for (unsigned int i=0;i<len;i++) {
-    int data = tx[i];
     int result = 0;
-    for (int bit=7;bit>=0;bit--) {
-      nrf_gpio_pin_write((uint32_t)pinInfo[SPIFLASH_PIN_MOSI].pin, (data>>bit)&1 );
+    for (int bit=0;bit<8;bit++) {
       nrf_gpio_pin_set((uint32_t)pinInfo[SPIFLASH_PIN_SCK].pin);
       result = (result<<1) | nrf_gpio_pin_read((uint32_t)pinInfo[SPIFLASH_PIN_MISO].pin);
       nrf_gpio_pin_clear((uint32_t)pinInfo[SPIFLASH_PIN_SCK].pin);
     }
-    if (rx) rx[i] = result;
+    rx[i] = result;
   }
 }
+
 static void spiFlashWrite(unsigned char *tx, unsigned int len) {
   for (unsigned int i=0;i<len;i++) {
     int data = tx[i];
@@ -382,11 +391,12 @@ static void spiFlashWriteCS(unsigned char *tx, unsigned int len) {
   nrf_gpio_pin_set((uint32_t)pinInfo[SPIFLASH_PIN_CS].pin);
 }
 static unsigned char spiFlashStatus() {
-  unsigned char buf[2] = {5,0};
+  unsigned char buf = 5;
   nrf_gpio_pin_clear((uint32_t)pinInfo[SPIFLASH_PIN_CS].pin);
-  spiFlashReadWrite(buf, buf, 2);
+  spiFlashWrite(&buf, 1);
+  spiFlashRead(&buf, 1);
   nrf_gpio_pin_set((uint32_t)pinInfo[SPIFLASH_PIN_CS].pin);
-  return buf[1];
+  return buf;
 }
 #endif
 
@@ -552,10 +562,10 @@ void jshResetPeripherals() {
   jshPinSetState(SPIFLASH_PIN_WP, JSHPINSTATE_GPIO_OUT);
 #endif
   jshPinSetValue(SPIFLASH_PIN_CS, 1);
+  jshPinSetState(SPIFLASH_PIN_CS, JSHPINSTATE_GPIO_OUT);
   jshPinSetValue(SPIFLASH_PIN_MOSI, 1);
   jshPinSetValue(SPIFLASH_PIN_SCK, 1);
-  jshPinSetState(SPIFLASH_PIN_CS, JSHPINSTATE_GPIO_OUT);
-  jshPinSetState(SPIFLASH_PIN_MISO, JSHPINSTATE_GPIO_IN);
+  jshPinSetState(SPIFLASH_PIN_MISO, JSHPINSTATE_GPIO_IN_PULLUP);
   jshPinSetState(SPIFLASH_PIN_MOSI, JSHPINSTATE_GPIO_OUT);
   jshPinSetState(SPIFLASH_PIN_SCK, JSHPINSTATE_GPIO_OUT);
 #ifdef SPIFLASH_PIN_RST
@@ -564,6 +574,7 @@ void jshResetPeripherals() {
   jshDelayMicroseconds(100);
   jshPinSetValue(SPIFLASH_PIN_RST, 1); // reset off
 #endif
+  spiFlashLastAddress = 0;
   jshDelayMicroseconds(100);
   // disable lock bits
   unsigned char buf[2];
@@ -603,6 +614,18 @@ void jshInit() {
   jshDelayMicroseconds(10);
   jshPinSetState(DEFAULT_CONSOLE_RX_PIN, JSHPINSTATE_GPIO_IN);
   jshDelayMicroseconds(10);
+
+#ifdef MICROBIT
+  /* We must wait ~1 second for the USB interface to initialise
+   * or it won't raise the RX pin and we won't think anything
+   * is connected. */
+  bool waitForUART = !jshPinGetValue(DEFAULT_CONSOLE_RX_PIN);
+  for (int i=0;i<10 && !jshPinGetValue(DEFAULT_CONSOLE_RX_PIN);i++) {
+    nrf_delay_ms(100);
+    ticksSinceStart = 0;
+  }
+#endif
+
   if (jshPinGetValue(DEFAULT_CONSOLE_RX_PIN)) {
     JshUSARTInfo inf;
     jshUSARTInitInfo(&inf);
@@ -610,6 +633,18 @@ void jshInit() {
     inf.pinTX = DEFAULT_CONSOLE_TX_PIN;
     inf.baudRate = DEFAULT_CONSOLE_BAUDRATE;
     jshUSARTSetup(EV_SERIAL1, &inf); // Initialize UART for communication with Espruino/terminal.
+#ifdef MICROBIT
+    /* Even after USB is initialised we must wait ~3 sec since otherwise
+     * the OS won't connect to the device and it'll lose what we're
+     * trying to send. 3 sec is a long time so only wait if we're sure
+     * the UART wasn't powered when we connected. */
+    if (waitForUART) {
+      for (int i=0;i<30;i++) {
+        nrf_delay_ms(100);
+        ticksSinceStart = 0;
+      }
+    }
+#endif
   } else {
     // If there's no UART, 'disconnect' the IO pin - this saves power when in deep sleep in noisy electrical environments
     jshPinSetState(DEFAULT_CONSOLE_RX_PIN, JSHPINSTATE_UNDEFINED);
@@ -715,7 +750,12 @@ void jshReset() {
 }
 
 void jshKill() {
-
+#ifdef SPIFLASH_BASE
+  if (spiFlashLastAddress) {
+    nrf_gpio_pin_set((uint32_t)pinInfo[SPIFLASH_PIN_CS].pin);
+    spiFlashLastAddress = 0;
+  }
+#endif
 }
 
 // stuff to do on idle
@@ -977,54 +1017,56 @@ JshPinState jshPinGetState(Pin pin) {
 }
 
 #ifdef NRF52
+volatile bool nrf_analog_read_interrupted = false;
+
 nrf_saadc_value_t nrf_analog_read() {
+
   nrf_saadc_value_t result;
   nrf_saadc_buffer_init(&result,1);
 
   nrf_saadc_task_trigger(NRF_SAADC_TASK_START);
 
-  while(!nrf_saadc_event_check(NRF_SAADC_EVENT_STARTED));
+  WAIT_UNTIL(nrf_analog_read_interrupted||nrf_saadc_event_check(NRF_SAADC_EVENT_STARTED),"ADC_START");
   nrf_saadc_event_clear(NRF_SAADC_EVENT_STARTED);
+  if (nrf_analog_read_interrupted) return -16384;
 
   nrf_saadc_task_trigger(NRF_SAADC_TASK_SAMPLE);
 
 
-  while(!nrf_saadc_event_check(NRF_SAADC_EVENT_END));
+  WAIT_UNTIL(nrf_analog_read_interrupted||nrf_saadc_event_check(NRF_SAADC_EVENT_END),"ADC_END");
   nrf_saadc_event_clear(NRF_SAADC_EVENT_END);
+  if (nrf_analog_read_interrupted) return -16384;
 
   nrf_saadc_task_trigger(NRF_SAADC_TASK_STOP);
-  while(!nrf_saadc_event_check(NRF_SAADC_EVENT_STOPPED));
+  WAIT_UNTIL(nrf_analog_read_interrupted||nrf_saadc_event_check(NRF_SAADC_EVENT_STOPPED),"ADC_STOP");
   nrf_saadc_event_clear(NRF_SAADC_EVENT_STOPPED);
+  if (nrf_analog_read_interrupted) return -16384;
 
   return result;
 }
 
-JsVarFloat nrf_analog_read_pin(int channel /*0..7*/) {
-  // sanity checks for channel
-    assert(NRF_SAADC_INPUT_AIN0 == 1);
-    assert(NRF_SAADC_INPUT_AIN1 == 2);
-    assert(NRF_SAADC_INPUT_AIN2 == 3);
-
-    nrf_saadc_input_t ain = channel+1;
-    nrf_saadc_channel_config_t config;
-    config.acq_time = NRF_SAADC_ACQTIME_3US;
-    config.gain = NRF_SAADC_GAIN1_4; // 1/4 of input volts
-    config.mode = NRF_SAADC_MODE_SINGLE_ENDED;
-    config.pin_p = ain;
-    config.pin_n = ain;
-    config.reference = NRF_SAADC_REFERENCE_VDD4; // VDD/4 as reference.
-    config.resistor_p = NRF_SAADC_RESISTOR_DISABLED;
-    config.resistor_n = NRF_SAADC_RESISTOR_DISABLED;
-
-    // make reading
-    nrf_saadc_enable();
-    nrf_saadc_resolution_set(NRF_SAADC_RESOLUTION_14BIT);
-    nrf_saadc_channel_init(0, &config);
-
-    JsVarFloat f = nrf_analog_read() / 16384.0;
-    nrf_saadc_channel_input_set(0, NRF_SAADC_INPUT_DISABLED, NRF_SAADC_INPUT_DISABLED); // give us back our pin!
+bool nrf_analog_read_start() {
+  // Were we already doing a read? We might have jumped in via IRQ and
+  // interrupted an existing reading...
+  if (nrf_saadc_enable_check()) {
+    // if so, cancel old reading
+    nrf_saadc_task_trigger(NRF_SAADC_TASK_STOP);
+    WAIT_UNTIL(nrf_saadc_event_check(NRF_SAADC_EVENT_STOPPED),"ADC_STOP2");
+    nrf_saadc_event_clear(NRF_SAADC_EVENT_STOPPED);
+    nrf_saadc_event_clear(NRF_SAADC_EVENT_STARTED);
+    nrf_saadc_event_clear(NRF_SAADC_EVENT_END);
     nrf_saadc_disable();
-    return f;
+    nrf_saadc_channel_input_set(0, NRF_SAADC_INPUT_DISABLED, NRF_SAADC_INPUT_DISABLED); // give us back our pin!
+    return true;
+  }
+  return false;
+}
+
+void nrf_analog_read_end(bool adcInUse) {
+  if (adcInUse)
+    nrf_analog_read_interrupted = true;
+  nrf_saadc_disable();
+  nrf_saadc_channel_input_set(0, NRF_SAADC_INPUT_DISABLED, NRF_SAADC_INPUT_DISABLED); // give us back our pin!
 }
 #endif
 
@@ -1039,7 +1081,37 @@ JsVarFloat jshPinAnalog(Pin pin) {
   if (!jshGetPinStateIsManual(pin))
     jshPinSetState(pin, JSHPINSTATE_ADC_IN);
 #ifdef NRF52
-  return nrf_analog_read_pin(pinInfo[pin].analog & JSH_MASK_ANALOG_CH);
+  int channel = pinInfo[pin].analog & JSH_MASK_ANALOG_CH;
+  assert(NRF_SAADC_INPUT_AIN0 == 1);
+  assert(NRF_SAADC_INPUT_AIN1 == 2);
+  assert(NRF_SAADC_INPUT_AIN2 == 3);
+
+  nrf_saadc_input_t ain = channel+1;
+  nrf_saadc_channel_config_t config;
+  config.acq_time = NRF_SAADC_ACQTIME_3US;
+  config.gain = NRF_SAADC_GAIN1_4; // 1/4 of input volts
+  config.mode = NRF_SAADC_MODE_SINGLE_ENDED;
+  config.pin_p = ain;
+  config.pin_n = ain;
+  config.reference = NRF_SAADC_REFERENCE_VDD4; // VDD/4 as reference.
+  config.resistor_p = NRF_SAADC_RESISTOR_DISABLED;
+  config.resistor_n = NRF_SAADC_RESISTOR_DISABLED;
+  bool adcInUse = nrf_analog_read_start();
+
+  // make reading
+  JsVarFloat f;
+  do {
+    nrf_analog_read_interrupted = false;
+    nrf_saadc_enable();
+    nrf_saadc_resolution_set(NRF_SAADC_RESOLUTION_14BIT);
+    nrf_saadc_channel_init(0, &config);
+
+    f = nrf_analog_read() / 16384.0;
+  } while (nrf_analog_read_interrupted);
+
+  nrf_analog_read_end(adcInUse);
+
+  return f;
 #else
   const nrf_adc_config_t nrf_adc_config =  {
       NRF_ADC_CONFIG_RES_10BIT,
@@ -1075,13 +1147,21 @@ int jshPinAnalogFast(Pin pin) {
   config.reference = NRF_SAADC_REFERENCE_VDD4; // VDD/4 as reference.
   config.resistor_p = NRF_SAADC_RESISTOR_DISABLED;
   config.resistor_n = NRF_SAADC_RESISTOR_DISABLED;
+  bool adcInUse = nrf_analog_read_start();
 
   // make reading
-  nrf_saadc_enable();
-  nrf_saadc_resolution_set(NRF_SAADC_RESOLUTION_8BIT);
-  nrf_saadc_channel_init(0, &config);
+  nrf_saadc_value_t f;
+  do {
+    nrf_analog_read_interrupted = false;
+    nrf_saadc_enable();
+    nrf_saadc_resolution_set(NRF_SAADC_RESOLUTION_8BIT);
+    nrf_saadc_channel_init(0, &config);
 
-  return nrf_analog_read() << 8;
+    f = nrf_analog_read();
+  } while (nrf_analog_read_interrupted);
+
+  nrf_analog_read_end(adcInUse);
+  return f << 8;
 #else
   const nrf_adc_config_t nrf_adc_config =  {
         NRF_ADC_CONFIG_RES_8BIT, // 8 bit for speed (hopefully!)
@@ -1097,15 +1177,13 @@ int jshPinAnalogFast(Pin pin) {
 #endif
 }
 
-JshPinFunction jshGetFreeTimer(JsVarFloat freq) {
+JshPinFunction jshGetFreeTimer(uint8_t clk, uint16_t counter) {
   int timer, channel, pin;
-  for (timer=0;timer<3;timer++) {
+  for (timer=0;timer<PWM_COUNTERS;timer++) {
     bool timerUsed = false;
     JshPinFunction timerFunc = JSH_TIMER1 + (JSH_TIMER2-JSH_TIMER1)*timer;
-    if (freq>0) {
-      // TODO: we could see if the frequency matches?
-      // if frequency specified then if timer is used by
-      // anything else we'll skip it
+    /* If the frequency of this timer doesn't match *and* it is in use, mark as used. */
+    if (pwmCounters[timer]!=counter || pwmClocks[timer]!=clk) {
       for (pin=0;pin<JSH_PIN_COUNT;pin++)
         if ((pinStates[pin]&JSH_MASK_TYPE) == timerFunc)
           timerUsed = true;
@@ -1129,19 +1207,55 @@ JshPinFunction jshGetFreeTimer(JsVarFloat freq) {
 JshPinFunction jshPinAnalogOutput(Pin pin, JsVarFloat value, JsVarFloat freq, JshAnalogOutputFlags flags) {
   if (value>1) value=1;
   if (value<0) value=0;
+  bool alreadyConfigured = false;
 #ifdef NRF52
   // Try and use existing pin function
   JshPinFunction func = pinStates[pin];
+  // Work out what speed we need this timer to be
+  int counter = (int)(16000000.0 / (freq>0 ? freq : 1000));
+  nrf_pwm_clk_t clk;
+  if (counter<32768) {
+    clk = NRF_PWM_CLK_16MHz;
+    if (counter<1) counter=1;
+  } else if (counter < (32768<<1)) {
+    clk = NRF_PWM_CLK_8MHz;
+    counter >>= 1;
+  } else if (counter < (32768<<2)) {
+    clk = NRF_PWM_CLK_4MHz;
+    counter >>= 2;
+  } else if (counter < (32768<<3)) {
+    clk = NRF_PWM_CLK_2MHz;
+    counter >>= 3;
+  } else if (counter < (32768<<4)) {
+    clk = NRF_PWM_CLK_1MHz;
+    counter >>= 4;
+  } else if (counter < (32768<<5)) {
+    clk = NRF_PWM_CLK_500kHz;
+    counter >>= 5;
+  } else if (counter < (32768<<6)) {
+    clk = NRF_PWM_CLK_250kHz;
+    counter >>= 6;
+  } else {
+    clk = NRF_PWM_CLK_125kHz;
+    counter >>= 7;
+  }
 
-  // If it's not a timer, try and find one
-  if (!JSH_PINFUNCTION_IS_TIMER(func)) {
+  // If we don't have a timer allocated, try and find one
+  if (JSH_PINFUNCTION_IS_TIMER(func)) {
+    alreadyConfigured = true;
+  } else {
 #if JSH_PORTV_COUNT>0
     // don't handle virtual ports (eg. pins on an IO Expander)
     if ((pinInfo[pin].port & JSH_PORT_MASK)==JSH_PORTV)
       func = 0;
     else
 #endif
-    func = jshGetFreeTimer(freq);
+    if (counter<=32767)
+      func = jshGetFreeTimer((uint8_t)clk, counter);
+    /* if counter>32767 then it's because the period
+     * was too long for the hardware timer to manage. So don't even
+     * try to allocate something.
+     */
   }
   /* we set the bit field here so that if the user changes the pin state
    * later on, we can get rid of the IRQs */
@@ -1170,68 +1284,41 @@ JshPinFunction jshPinAnalogOutput(Pin pin, JsVarFloat value, JsVarFloat freq, Js
     value = 1-value;
 
   NRF_PWM_Type *pwm = nrf_get_pwm(func);
-  if (!pwm) { assert(0); return 0; };
-  jshPinSetState(pin, JSHPINSTATE_GPIO_OUT);
-  jshPinSetFunction(pin, func);
-  nrf_pwm_enable(pwm);
-
-  nrf_pwm_clk_t clk;
-  if (freq<=0) freq = 1000;
-  int counter = (int)(16000000.0 / freq);
-
-  if (counter<32768) {
-    clk = NRF_PWM_CLK_16MHz;
-    if (counter<1) counter=1;
-  } else if (counter < (32768<<1)) {
-    clk = NRF_PWM_CLK_8MHz;
-    counter >>= 1;
-  } else if (counter < (32768<<2)) {
-    clk = NRF_PWM_CLK_4MHz;
-    counter >>= 2;
-  } else if (counter < (32768<<3)) {
-    clk = NRF_PWM_CLK_2MHz;
-    counter >>= 3;
-  } else if (counter < (32768<<4)) {
-    clk = NRF_PWM_CLK_1MHz;
-    counter >>= 4;
-  } else if (counter < (32768<<5)) {
-    clk = NRF_PWM_CLK_500kHz;
-    counter >>= 5;
-  } else if (counter < (32768<<6)) {
-    clk = NRF_PWM_CLK_250kHz;
-    counter >>= 6;
-  } else {
-    clk = NRF_PWM_CLK_125kHz;
-    counter >>= 7;
-    if (counter>32767) counter = 32767;
-    // Warn that we're out of range?
-  }
-
-  nrf_pwm_configure(pwm,
-      clk, NRF_PWM_MODE_UP, counter /* top value - 15 bits, not 16! */);
-  nrf_pwm_decoder_set(pwm,
-      NRF_PWM_LOAD_INDIVIDUAL, // allow all 4 channels to be used
-      NRF_PWM_STEP_TRIGGERED); // Only step on NEXTSTEP task
-
-  /*nrf_pwm_shorts_set(pwm, 0);
-  nrf_pwm_int_set(pwm, 0);
-  nrf_pwm_event_clear(pwm, NRF_PWM_EVENT_LOOPSDONE);
-  nrf_pwm_event_clear(pwm, NRF_PWM_EVENT_SEQEND0);
-  nrf_pwm_event_clear(pwm, NRF_PWM_EVENT_SEQEND1);
-  nrf_pwm_event_clear(pwm, NRF_PWM_EVENT_STOPPED);
-  nrf_pwm_event_clear(pwm, NRF_PWM_EVENT_STOPPED);*/
-
   int timer = ((func&JSH_MASK_TYPE)-JSH_TIMER1) >> JSH_SHIFT_TYPE;
   int channel = (func&JSH_MASK_INFO) >> JSH_SHIFT_INFO;
+  if (!pwm) { assert(0); return 0; };
+
+  if (!alreadyConfigured) {
+    jshPinSetState(pin, JSHPINSTATE_GPIO_OUT);
+    jshPinSetFunction(pin, func);
+    nrf_pwm_enable(pwm);
+  }
+
+  if (alreadyConfigured) {
+    /* If timer is configured but frequency is different,
+    reconfigure it */
+    if (counter != pwmCounters[timer] ||
+        clk != pwmClocks[timer])
+      alreadyConfigured = false;
+  }
+
   pwmCounters[timer] = counter;
+  pwmClocks[timer] = (uint8_t)clk;
   pwmValues[timer][channel] = counter - (uint16_t)(value*counter);
-  nrf_pwm_loop_set(pwm, PWM_LOOP_CNT_Disabled);
-  nrf_pwm_seq_ptr_set(      pwm, 0, &pwmValues[timer][0]);
-  nrf_pwm_seq_cnt_set(      pwm, 0, 4);
-  nrf_pwm_seq_refresh_set(  pwm, 0, 0);
-  nrf_pwm_seq_end_delay_set(pwm, 0, 0);
+
+  if (!alreadyConfigured) {
+    nrf_pwm_configure(pwm,
+        clk, NRF_PWM_MODE_UP, counter /* top value - 15 bits, not 16! */);
+    nrf_pwm_decoder_set(pwm,
+        NRF_PWM_LOAD_INDIVIDUAL, // allow all 4 channels to be used
+        NRF_PWM_STEP_TRIGGERED); // Only step on NEXTSTEP task
+    nrf_pwm_loop_set(pwm, PWM_LOOP_CNT_Disabled);
+    nrf_pwm_seq_ptr_set(      pwm, 0, &pwmValues[timer][0]);
+    nrf_pwm_seq_cnt_set(      pwm, 0, 4);
+    nrf_pwm_seq_refresh_set(  pwm, 0, 0);
+    nrf_pwm_seq_end_delay_set(pwm, 0, 0);
+  }
   nrf_pwm_task_trigger(pwm, NRF_PWM_TASK_SEQSTART0);
-  // nrf_pwm_disable(pwm);
   return func;
 #endif
 } // if freq<=0, the default is used
@@ -1308,9 +1395,14 @@ bool jshCanWatch(Pin pin) {
 
 IOEventFlags jshPinWatch(Pin pin, bool shouldWatch) {
   if (!jshIsPinValid(pin)) return EV_NONE;
+#if JSH_PORTV_COUNT>0
+  // handle virtual ports (eg. pins on an IO Expander)
+  if ((pinInfo[pin].port & JSH_PORT_MASK)==JSH_PORTV)
+    return EV_NONE;
+#endif
   uint32_t p = (uint32_t)pinInfo[pin].pin;
   if (shouldWatch) {
-    nrf_drv_gpiote_in_config_t cls_1_config = GPIOTE_CONFIG_IN_SENSE_TOGGLE(true); // FIXME: Maybe we want low accuracy? Otherwise this will
+    nrf_drv_gpiote_in_config_t cls_1_config = GPIOTE_CONFIG_IN_SENSE_TOGGLE(true); // FIXME: Maybe we want low accuracy? Potentially this draws more power in sleep modes?
     cls_1_config.is_watcher = true; // stop this resetting the input state
     nrf_drv_gpiote_in_init(p, &cls_1_config, jsvPinWatchHandler);
     nrf_drv_gpiote_in_event_enable(p, true);
@@ -1432,14 +1524,14 @@ void jshUSARTSetup(IOEventFlags device, JshUSARTInfo *inf) {
     return;
 
   unsigned int num = device-EV_SERIAL1;
-  jshSetFlowControlEnabled(device, inf->xOnXOff, inf->pinCTS);
-  jshSetErrorHandlingEnabled(device, inf->errorHandling);
-
   nrf_uart_baudrate_t baud = (nrf_uart_baudrate_t)nrf_utils_get_baud_enum(inf->baudRate);
   if (baud==0)
     return jsError("Invalid baud rate %d", inf->baudRate);
   if (!jshIsPinValid(inf->pinRX) && !jshIsPinValid(inf->pinTX))
     return jsError("Invalid RX or TX pins");
+
+  jshSetFlowControlEnabled(device, inf->xOnXOff, inf->pinCTS);
+  jshSetErrorHandlingEnabled(device, inf->errorHandling);
 
   if (uart[num].isInitialised) {
     uart[num].isInitialised = false;
@@ -1573,6 +1665,32 @@ int jshSPISend(IOEventFlags device, int data) {
 #if SPI_ENABLED
   if (device!=EV_SPI1 || !jshIsDeviceInitialised(device)) return -1;
   jshSPIWait(device);
+#if defined(SPI0_USE_EASY_DMA)
+  // Hack for https://infocenter.nordicsemi.com/topic/­errata_nRF52832_Rev2/ERR/nRF52832/Rev2/l­atest/anomaly_832_58.html?cp=4_2_1_0_1_8
+  // Can't use DMA for single bytes as it's broken
+#if NRF_SD_BLE_API_VERSION>5
+  NRF_SPI_Type *p_spi = (NRF_SPI_Type *)spi0.u.spi.p_reg;
+  NRF_SPIM_Type *p_spim = (NRF_SPIM_Type *)spi0.u.spim.p_reg;
+#else
+  NRF_SPI_Type *p_spi = (NRF_SPI_Type *)spi0.p_registers;
+  NRF_SPIM_Type *p_spim = (NRF_SPIM_Type *)spi0.p_registers;
+#endif
+  nrf_spim_disable(p_spim);
+  nrf_spi_enable(p_spi); // enable SPI mode (non-DMA)
+  nrf_spi_int_disable(p_spi, NRF_SPI_INT_READY_MASK);
+  nrf_spi_event_clear(p_spi, NRF_SPI_EVENT_READY);
+  // start transfer
+  spi0Sending = true;
+  nrf_spi_txd_set(p_spi, data);
+  // wait for rx data
+  while (!nrf_spi_event_check(p_spi, NRF_SPI_EVENT_READY)) {}
+  nrf_spi_event_clear(p_spi, NRF_SPI_EVENT_READY);
+  int rx = nrf_spi_rxd_get(p_spi);
+  spi0Sending = false;
+  nrf_spi_disable(p_spi);
+  nrf_spim_enable(p_spim); // enable SPIM mode (DMA)
+  return rx;
+#else
   uint8_t tx = (uint8_t)data;
   uint8_t rx = 0;
   spi0Sending = true;
@@ -1584,6 +1702,8 @@ int jshSPISend(IOEventFlags device, int data) {
   jshSPIWait(device);
   return rx;
 #endif
+#endif
+
 }
 
 /** Send 16 bit data through the given SPI device. */
@@ -1608,6 +1728,15 @@ void jshSPISend16(IOEventFlags device, int data) {
 bool jshSPISendMany(IOEventFlags device, unsigned char *tx, unsigned char *rx, size_t count, void (*callback)()) {
 #if SPI_ENABLED
   if (device!=EV_SPI1 || !jshIsDeviceInitialised(device)) return false;
+#if defined(SPI0_USE_EASY_DMA)
+  // Hack for https://infocenter.nordicsemi.com/topic/­errata_nRF52832_Rev2/ERR/nRF52832/Rev2/l­atest/anomaly_832_58.html?cp=4_2_1_0_1_8­
+  if (count==1) {
+    int r = jshSPISend(device, tx?*tx:-1);
+    if (rx) *rx = r;
+    if (callback) callback();
+    return true;
+  }
+#endif
   jshSPIWait(device);
   spi0Sending = true;
 
@@ -1777,6 +1906,11 @@ void jshFlashErasePage(uint32_t addr) {
 #ifdef SPIFLASH_BASE
   if ((addr >= SPIFLASH_BASE) && (addr < (SPIFLASH_BASE+SPIFLASH_LENGTH))) {
     addr &= 0xFFFFFF;
+    // disable CS if jshFlashRead had left it set
+    if (spiFlashLastAddress) {
+      nrf_gpio_pin_set((uint32_t)pinInfo[SPIFLASH_PIN_CS].pin);
+      spiFlashLastAddress = 0;
+    }
     //jsiConsolePrintf("SPI Erase %d\n",addr);
     unsigned char b[4];
     // WREN
@@ -1818,17 +1952,19 @@ void jshFlashRead(void * buf, uint32_t addr, uint32_t len) {
   if ((addr >= SPIFLASH_BASE) && (addr < (SPIFLASH_BASE+SPIFLASH_LENGTH))) {
     addr &= 0xFFFFFF;
     //jsiConsolePrintf("SPI Read %d %d\n",addr,len);
-    unsigned char b[4];
-    // Read
-    b[0] = 0x03;
-    b[1] = addr>>16;
-    b[2] = addr>>8;
-    b[3] = addr;
-    jshPinSetValue(SPIFLASH_PIN_CS,0);
-    spiFlashWrite(b,4);
-    memset(buf,0,len); // ensure we just send 0
-    spiFlashReadWrite((unsigned char*)buf,(unsigned char*)buf,len);
-    jshPinSetValue(SPIFLASH_PIN_CS,1);
+    if (spiFlashLastAddress==0 || spiFlashLastAddress!=addr) {
+      nrf_gpio_pin_set((uint32_t)pinInfo[SPIFLASH_PIN_CS].pin);
+      unsigned char b[4];
+      // Read
+      b[0] = 0x03;
+      b[1] = addr>>16;
+      b[2] = addr>>8;
+      b[3] = addr;
+      nrf_gpio_pin_clear((uint32_t)pinInfo[SPIFLASH_PIN_CS].pin);
+      spiFlashWrite(b,4);
+    }
+    spiFlashRead((unsigned char*)buf,len);
+    spiFlashLastAddress = addr + len;
     return;
   }
 #endif
@@ -1843,6 +1979,11 @@ void jshFlashWrite(void * buf, uint32_t addr, uint32_t len) {
 #ifdef SPIFLASH_BASE
   if ((addr >= SPIFLASH_BASE) && (addr < (SPIFLASH_BASE+SPIFLASH_LENGTH))) {
     addr &= 0xFFFFFF;
+    // disable CS if jshFlashRead had left it set
+    if (spiFlashLastAddress) {
+      nrf_gpio_pin_set((uint32_t)pinInfo[SPIFLASH_PIN_CS].pin);
+      spiFlashLastAddress = 0;
+    }
     //jsiConsolePrintf("SPI Write %d %d\n",addr, len);
     unsigned char b[5];
 #if defined(BANGLEF5)
@@ -1881,10 +2022,10 @@ void jshFlashWrite(void * buf, uint32_t addr, uint32_t len) {
       b[1] = addr>>16;
       b[2] = addr>>8;
       b[3] = addr;
-      jshPinSetValue(SPIFLASH_PIN_CS,0);
+      nrf_gpio_pin_clear((uint32_t)pinInfo[SPIFLASH_PIN_CS].pin);
       spiFlashWrite(b,4);
       spiFlashWrite(bufPtr,l);
-      jshPinSetValue(SPIFLASH_PIN_CS,1);
+      nrf_gpio_pin_set((uint32_t)pinInfo[SPIFLASH_PIN_CS].pin);
       // Check busy
       WAIT_UNTIL(!(spiFlashStatus()&1), "jshFlashWrite");
       // go to next chunk
@@ -1967,6 +2108,12 @@ bool jshSleep(JsSysTime timeUntilWake) {
     if (timeUntilWake > max) timeUntilWake = max;
   }
 
+#ifdef SPIFLASH_BASE
+  if (spiFlashLastAddress) {
+    nrf_gpio_pin_set((uint32_t)pinInfo[SPIFLASH_PIN_CS].pin);
+    spiFlashLastAddress = 0;
+  }
+#endif
 
   if (timeUntilWake < JSSYSTIME_MAX) {
 #ifdef BLUETOOTH
@@ -1984,6 +2131,18 @@ bool jshSleep(JsSysTime timeUntilWake) {
   }
   jsiSetSleep(JSI_SLEEP_ASLEEP);
   while (!hadEvent) {
+#ifdef NRF52
+    /*
+     * Clear FPU exceptions.
+     * Without this step, the FPU interrupt is marked as pending,
+     * preventing system from sleeping.
+     */
+    uint32_t fpscr = __get_FPSCR();
+    __set_FPSCR(fpscr & ~0x9Fu);
+    __DMB();
+    NVIC_ClearPendingIRQ(FPU_IRQn);
+#endif
+
     sd_app_evt_wait(); // Go to sleep, wait to be woken up
     jshGetSystemTime(); // check for RTC overflows
     #if defined(NRF_USB)
