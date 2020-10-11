@@ -253,6 +253,8 @@ void nrf_drv_twis_enable(nrf_drv_twis_t const * const p_inst);
  */
 void nrf_drv_twis_disable(nrf_drv_twis_t const * const p_inst);
 
+bool nrf_drv_twis_is_enabled(int p_instance_index);
+
 /**
  * @brief Get and clear last error flags
  *
