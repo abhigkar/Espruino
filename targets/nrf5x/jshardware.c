@@ -267,6 +267,11 @@ unsigned int ticksSinceStart = 0;
 
 JshPinFunction pinStates[JSH_PIN_COUNT];
 
+#ifdef NRF52_SERIES
+/// This is used to handle the case where an analog read happens in an IRQ interrupts one being done outside
+volatile bool nrf_analog_read_interrupted = false;
+#endif
+
 #if SPI_ENABLED
 static const nrf_drv_spi_t spi0 = NRF_DRV_SPI_INSTANCE(0);
 bool spi0Initialised = false;
@@ -605,6 +610,9 @@ void jshResetPeripherals() {
   buf[1] = 0;
   spiFlashWriteCS(buf,2);
 #endif
+#ifdef NRF52_SERIES
+  nrf_analog_read_interrupted = false;
+#endif
 }
 
 void jshInit() {
@@ -771,6 +779,12 @@ void jshKill() {
   if (spiFlashLastAddress) {
     nrf_gpio_pin_set((uint32_t)pinInfo[SPIFLASH_PIN_CS].pin);
     spiFlashLastAddress = 0;
+  }
+#endif
+#ifdef I2C_SLAVE
+  if (nrf_drv_twis_is_enabled(TWIS1_INSTANCE_INDEX)) {
+    nrf_drv_twis_disable(&TWIS1);
+    nrf_drv_twis_uninit(&TWIS1);
   }
 #endif
 }
@@ -1038,8 +1052,6 @@ JshPinState jshPinGetState(Pin pin) {
 }
 
 #ifdef NRF52_SERIES
-volatile bool nrf_analog_read_interrupted = false;
-
 nrf_saadc_value_t nrf_analog_read() {
 
   nrf_saadc_value_t result;
@@ -1091,6 +1103,27 @@ void nrf_analog_read_end(bool adcInUse) {
 }
 #endif
 
+#ifdef NRF52_SERIES
+static void jshPinAnalogSetConfig(nrf_saadc_channel_config_t *config, Pin pin) {
+  nrf_saadc_input_t ain = 1 + (pinInfo[pin].analog & JSH_MASK_ANALOG_CH);
+  config->acq_time = NRF_SAADC_ACQTIME_3US;
+  config->gain = NRF_SAADC_GAIN1_4; // 1/4 of input volts
+  config->reference = NRF_SAADC_REFERENCE_VDD4; // VDD/4 as reference.
+#ifdef MICROBIT2
+  if (pin == MIC_PIN) {
+    config->gain = NRF_SAADC_GAIN4; // the mic needs highest gain
+    config->reference = NRF_SAADC_REFERENCE_INTERNAL; // 0.6v reference.
+  }
+#endif
+  config->mode = NRF_SAADC_MODE_SINGLE_ENDED;
+  config->pin_p = ain;
+  config->pin_n = ain;
+
+  config->resistor_p = NRF_SAADC_RESISTOR_DISABLED;
+  config->resistor_n = NRF_SAADC_RESISTOR_DISABLED;
+}
+#endif
+
 // Returns an analog value between 0 and 1
 JsVarFloat jshPinAnalog(Pin pin) {
 #if JSH_PORTV_COUNT>0
@@ -1107,16 +1140,9 @@ JsVarFloat jshPinAnalog(Pin pin) {
   assert(NRF_SAADC_INPUT_AIN1 == 2);
   assert(NRF_SAADC_INPUT_AIN2 == 3);
 
-  nrf_saadc_input_t ain = channel+1;
   nrf_saadc_channel_config_t config;
-  config.acq_time = NRF_SAADC_ACQTIME_3US;
-  config.gain = NRF_SAADC_GAIN1_4; // 1/4 of input volts
-  config.mode = NRF_SAADC_MODE_SINGLE_ENDED;
-  config.pin_p = ain;
-  config.pin_n = ain;
-  config.reference = NRF_SAADC_REFERENCE_VDD4; // VDD/4 as reference.
-  config.resistor_p = NRF_SAADC_RESISTOR_DISABLED;
-  config.resistor_n = NRF_SAADC_RESISTOR_DISABLED;
+  jshPinAnalogSetConfig(&config, pin);
+
   bool adcInUse = nrf_analog_read_start();
 
   // make reading
@@ -1157,17 +1183,9 @@ int jshPinAnalogFast(Pin pin) {
   assert(NRF_SAADC_INPUT_AIN0 == 1);
   assert(NRF_SAADC_INPUT_AIN1 == 2);
   assert(NRF_SAADC_INPUT_AIN2 == 3);
-  nrf_saadc_input_t ain = 1 + (pinInfo[pin].analog & JSH_MASK_ANALOG_CH);
 
   nrf_saadc_channel_config_t config;
-  config.acq_time = NRF_SAADC_ACQTIME_3US;
-  config.gain = NRF_SAADC_GAIN1_4; // 1/4 of input volts
-  config.mode = NRF_SAADC_MODE_SINGLE_ENDED;
-  config.pin_p = ain;
-  config.pin_n = ain;
-  config.reference = NRF_SAADC_REFERENCE_VDD4; // VDD/4 as reference.
-  config.resistor_p = NRF_SAADC_RESISTOR_DISABLED;
-  config.resistor_n = NRF_SAADC_RESISTOR_DISABLED;
+  jshPinAnalogSetConfig(&config, pin);
   bool adcInUse = nrf_analog_read_start();
 
   // make reading
@@ -1811,12 +1829,15 @@ static void twis_event_handler(nrf_drv_twis_evt_t const * const p_event)
             char *bufPtr = jsvGetDataPointer(buf, &bufLen);
             if (bufPtr && bufLen>twisAddr)
               nrf_drv_twis_tx_prepare(&TWIS1, bufPtr + twisAddr, bufLen - twisAddr);
+            else
+              nrf_drv_twis_tx_prepare(&TWIS1, twisRxBuf, 0);
             jsvUnLock2(i2c,buf);
           }
         }
         break;
     case TWIS_EVT_READ_DONE:
         jshPushIOEvent(EV_I2C1, twisAddr|0x80|(p_event->data.tx_amount<<8)); // send event to indicate a read
+        jshHadEvent();
         twisAddr += p_event->data.tx_amount;
         break;
     case TWIS_EVT_WRITE_REQ:
@@ -1828,6 +1849,7 @@ static void twis_event_handler(nrf_drv_twis_evt_t const * const p_event)
           twisAddr = twisRxBuf[0];
           if (p_event->data.rx_amount>1) {
             jshPushIOEvent(EV_I2C1, twisAddr|((p_event->data.rx_amount-1)<<8)); // send event to indicate a write
+            jshHadEvent();
             JsVar *i2c = jsvObjectGetChild(execInfo.root,"I2C1",0);
             if (i2c) {
               JsVar *buf = jsvObjectGetChild(i2c,"buffer",0);
@@ -1863,6 +1885,10 @@ void jshI2CSetup(IOEventFlags device, JshI2CInfo *inf) {
   }
   uint32_t err_code;
 #ifdef I2C_SLAVE
+  if ((device == EV_I2C1) && nrf_drv_twis_is_enabled(TWIS1_INSTANCE_INDEX)) {
+    nrf_drv_twis_disable(&TWIS1);
+    nrf_drv_twis_uninit(&TWIS1);
+  }
   if (inf->slaveAddr >=0) {
     const nrf_drv_twis_t *twis = jshGetTWIS(device);
     if (!twis) return;
@@ -2329,12 +2355,21 @@ JsVarFloat jshReadVRef() {
   config.resistor_p = NRF_SAADC_RESISTOR_DISABLED;
   config.resistor_n = NRF_SAADC_RESISTOR_DISABLED;
 
-  // make reading
-  nrf_saadc_enable();
-  nrf_saadc_resolution_set(NRF_SAADC_RESOLUTION_14BIT);
-  nrf_saadc_channel_init(0, &config);
+  bool adcInUse = nrf_analog_read_start();
 
-  return 6.0 * (nrf_analog_read() * 0.6 / 16384.0);
+  // make reading
+  JsVarFloat f;
+  do {
+    nrf_analog_read_interrupted = false;
+    nrf_saadc_enable();
+    nrf_saadc_resolution_set(NRF_SAADC_RESOLUTION_14BIT);
+    nrf_saadc_channel_init(0, &config);
+
+    f = nrf_analog_read() * (6.0 * 0.6 / 16384.0);
+  } while (nrf_analog_read_interrupted);
+  nrf_analog_read_end(adcInUse);
+
+  return f;
 #else
   const nrf_adc_config_t nrf_adc_config =  {
        NRF_ADC_CONFIG_RES_10BIT,
